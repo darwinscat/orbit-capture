@@ -13,7 +13,7 @@ public:
     static constexpr int NP = 256;
     struct Trace { std::vector<double> curve; juce::Colour colour; float thick; bool fill; };
     SpectrumView() { setMouseCursor(juce::MouseCursor::CrosshairCursor); }
-    void mouseMove(const juce::MouseEvent& e) override { mx = (float)e.position.x; repaint(); }
+    void mouseMove(const juce::MouseEvent& e) override { mx = (float)e.position.x; my = (float)e.position.y; repaint(); }
     void mouseExit(const juce::MouseEvent&) override { mx = -1.0f; repaint(); }
 
     // ---- the active strip's HPF/LPF as two draggable vertical lines (wheel over a line = slope) ----
@@ -24,6 +24,15 @@ public:
     std::function<void(double, int, double, int)> onFilterDrag; // live → (hpHz, hpSlopeDb, lpHz, lpSlopeDb)
     std::function<void()> onFilterDragEnd;                      // release / wheel → persist
     std::function<void(int)> onPickTrace;                       // click a curve → select its strip (the composite = Master)
+    std::function<void(int)> onPickLegend;                      // click a legend row → its entry index
+    std::function<void(juce::Rectangle<int>)> onGearMenu;       // click the gear → open the view menu (screen coords)
+
+    // The colour → full-description legend (top-right). Entry order is the caller's contract
+    // (mics first, MIX last); `active` bolds the selected row, `dim` greys a muted/off-solo
+    // channel (its curve leaves the graph — the legend is where it remains visible). Empty
+    // list hides the legend.
+    struct LegendEntry { juce::String text; juce::Colour colour; bool dim = false; };
+    void setLegend(std::vector<LegendEntry> e, int active) { legend = std::move(e); legendActive = active; repaint(); }
 
     void setActiveFilter(bool active, bool hpOn, bool lpOn, double hpHz, int hpDb, double lpHz, int lpDb, juce::Colour col) {
         fltActive = active; fltHp = hpOn; fltLp = lpOn; hpF = hpHz; hpDb_ = hpDb; lpF = lpHz; lpDb_ = lpDb; lineColour = col; repaint();
@@ -37,6 +46,10 @@ public:
         return 0;
     }
     void mouseDown(const juce::MouseEvent& e) override {
+        if (gearRect().contains(e.position.toInt())) {           // the view-options gear (top-left overlay)
+            if (onGearMenu) onGearMenu(localAreaToGlobal(gearRect())); return; }
+        for (int i = 0; i < (int)legendRects.size(); ++i)       // legend rows take priority (they sit on top)
+            if (legendRects[(size_t)i].contains(e.position.toInt())) { if (onPickLegend) onPickLegend(i); return; }
         drag = lineHit((float)e.position.x);                    // 1 hp-line · 2 lp-line · 0 none
         if (drag != 0) { dragStartY = (float)e.position.y; dragStartSlope = slopeIdxOfDb(drag == 1 ? hpDb_ : lpDb_); }
         else if (onPickTrace) { const int t = nearestTrace(e.position); if (t >= 0) onPickTrace(t); }
@@ -191,6 +204,36 @@ public:
             if (fltHp) line(xh, "HPF " + freqLabel(hpF) + " " + juce::String(hpDb_), false);
             if (fltLp) line(xl, "LPF " + freqLabel(lpF) + " " + juce::String(lpDb_), true);
         }
+        if (!traces.empty()) {                                         // the view-options gear (top-left overlay)
+            const bool hover = mx >= 0.0f && gearRect().contains(juce::Point<int>((int)mx, (int)my));
+            g.setColour(juce::Colours::white.withAlpha(hover ? 0.9f : 0.35f));
+            g.setFont(juce::FontOptions(15.0f));
+            g.drawText(juce::String::fromUTF8("\xe2\x9a\x99"), gearRect(), juce::Justification::centred);
+        }
+        legendRects.clear();
+        if (!legend.empty()) {                                         // colour → mic legend, top-right, clickable
+            const juce::Font lf(juce::FontOptions(10.0f));
+            int wMax = 0;
+            for (const auto& e : legend) wMax = juce::jmax(wMax, (int)std::ceil(juce::GlyphArrangement::getStringWidth(lf, e.text)));
+            const int rowH = 14, pad = 6, chip = 8;
+            const int pw = juce::jmin((int)b.getWidth() - 20, wMax + chip + 3 * pad);
+            auto panel = juce::Rectangle<int>((int)b.getRight() - pw - 8, (int)b.getY() + 6, pw, rowH * (int)legend.size() + pad);
+            g.setColour(juce::Colours::black.withAlpha(0.45f));
+            g.fillRoundedRectangle(panel.toFloat(), 4.0f);
+            auto rows = panel.reduced(pad, pad / 2);
+            g.setFont(lf);
+            for (int i = 0; i < (int)legend.size(); ++i) {
+                auto row = rows.removeFromTop(rowH);
+                legendRects.push_back(row.expanded(2, 0));
+                const bool act = i == legendActive, dim = legend[(size_t)i].dim;
+                g.setColour(legend[(size_t)i].colour.withAlpha(dim ? 0.3f : act ? 1.0f : 0.8f));
+                g.fillRoundedRectangle((float)row.getX(), (float)row.getCentreY() - chip / 2.0f, (float)chip, (float)chip, 2.0f);
+                if (act) g.drawRoundedRectangle((float)row.getX() - 1.5f, row.getCentreY() - chip / 2.0f - 1.5f, chip + 3.0f, chip + 3.0f, 3.0f, 1.0f);
+                g.setColour(juce::Colours::white.withAlpha(dim ? 0.35f : act ? 1.0f : 0.72f));
+                g.setFont(juce::FontOptions(10.0f, act ? juce::Font::bold : juce::Font::plain));
+                g.drawText(legend[(size_t)i].text, row.withTrimmedLeft(chip + pad), juce::Justification::centredLeft);
+            }
+        }
         const auto& main = traces.back().curve;                        // crosshair reads the main (last) trace
         if (mx >= b.getX() && mx <= b.getRight() && !main.empty()) {
             const float rel = (mx - b.getX()) / b.getWidth();
@@ -234,7 +277,11 @@ private:
     std::vector<Trace> traces;
     std::vector<double> interference;
     std::vector<double> liveSpec;               // smoothed live-analyser curve (NP points)
-    float mx = -1.0f;
+    std::vector<LegendEntry> legend;            // colour → description rows (top-right); empty = hidden
+    int legendActive = -1;
+    std::vector<juce::Rectangle<int>> legendRects;   // row hit-boxes, rebuilt each paint
+    static juce::Rectangle<int> gearRect() { return { 6, 4, 20, 20 }; }   // the view-options gear hotspot
+    float mx = -1.0f, my = -1.0f;
     bool fltActive = false, fltHp = false, fltLp = false;          // a strip is active · its HPF / LPF are enabled
     double hpF = kHpMin, lpF = kLpMax; int hpDb_ = 24, lpDb_ = 12; // active strip's HPF/LPF cutoff + slope (dB/oct)
     juce::Colour lineColour { 0xffff8a3d };                        // active strip's colour (filter line/curve tint)

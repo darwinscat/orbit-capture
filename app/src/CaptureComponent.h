@@ -21,6 +21,8 @@
 #include <atomic>
 #include <array>
 #include <cstdint>
+#include <cmath>
+#include <limits>
 
 #include "ui/Widgets.h"
 
@@ -34,6 +36,7 @@
 #include "core/ExportPlanner.h"
 #include "core/IrDeliverable.h"
 #include "core/IrImport.h"
+#include "core/AutoAlign.h"
 #include "core/BlendEngine.h"
 #include "core/CapturePipeline.h"
 #include "model/MixVar.h"
@@ -152,14 +155,14 @@ public:
             }
             return v;
         };
-        diClips.push_back({ "cats-hard-day",      decodeDI(BinaryData::cats_wav,   BinaryData::cats_wavSize),   48000.0 });
-        diClips.push_back({ "deep-space",         decodeDI(BinaryData::space_wav,  BinaryData::space_wavSize),  48000.0 });
-        diClips.push_back({ "eleven-light-years", decodeDI(BinaryData::eleven_wav, BinaryData::eleven_wavSize), 48000.0 });
+        factoryClips.push_back({ "cats-hard-day",      decodeDI(BinaryData::cats_wav,   BinaryData::cats_wavSize),   48000.0 });
+        factoryClips.push_back({ "deep-space",         decodeDI(BinaryData::space_wav,  BinaryData::space_wavSize),  48000.0 });
+        factoryClips.push_back({ "eleven-light-years", decodeDI(BinaryData::eleven_wav, BinaryData::eleven_wavSize), 48000.0 });
         engine.audition.reserve(3800000);
         engine.conv.reserve(3800000);                                         // stable capacity: the audio thread streams it
-        for (int i = 0; i < (int)diClips.size(); ++i) reviewTab.diBox.addItem(diClips[(size_t)i].name, i + 1);
-        reviewTab.diBox.setSelectedId(1, juce::dontSendNotification);
         diFormats.registerBasicFormats();
+        scanUserSamples();                                        // app-data /samples — user clips persist
+        rebuildDiBox({});
         reviewTab.loadDiBtn.setButtonText("Load file...");
         reviewTab.loadDiBtn.onClick = [this] {                              // audition the user's OWN DI track
             diChooser = std::make_unique<juce::FileChooser>("Load a DI track", juce::File(),
@@ -172,6 +175,7 @@ public:
                     if (rd == nullptr || rd->lengthInSamples <= 0 || rd->sampleRate <= 0) {
                         reviewTab.reviewInfo.setText("Could not read " + f.getFileName(), juce::dontSendNotification); return;
                     }
+                    f.copyFileTo(samplesDir().getChildFile(f.getFileName()));   // user samples persist across sessions
                     // std::min, NOT juce::jmin: an explicit jmin<int64> makes GCC instantiate the
                     // juce::dsp SIMDRegister<long long> overload candidate, which doesn't exist on Linux.
                     const int n = (int)std::min<juce::int64>(rd->lengthInSamples, (juce::int64)(rd->sampleRate * 60.0));
@@ -181,31 +185,24 @@ public:
                     c.samples.assign(b.getReadPointer(0), b.getReadPointer(0) + n);
                     if (b.getNumChannels() > 1)                    // fold stereo to mono
                         for (int i = 0; i < n; ++i) c.samples[(size_t)i] = 0.5f * (b.getReadPointer(0)[i] + b.getReadPointer(1)[i]);
-                    diClips.push_back(std::move(c));
-                    reviewTab.diBox.addItem(diClips.back().name, (int)diClips.size());
-                    reviewTab.diBox.setSelectedId((int)diClips.size(), juce::dontSendNotification);
+                    userClips.push_back(std::move(c));
+                    rebuildDiBox(userClips.back().name);
                     reviewTab.reviewInfo.setText("Loaded " + f.getFileName() + " (" + juce::String((double)n / rd->sampleRate, 1)
                                      + " s" + juce::String(rd->lengthInSamples > (juce::int64)n ? ", capped at 60 s" : "")
                                      + "). Play it dry or through the IR.", juce::dontSendNotification);
                 });
         };
-        reviewTab.playWetBtn.setButtonText("Play through cab IR");
-        reviewTab.playWetBtn.setColour(juce::TextButton::buttonColourId, brand::orange.darker(0.28f));
-        reviewTab.playWetBtn.setColour(juce::TextButton::textColourOffId, juce::Colours::white);
-        reviewTab.stopBtn.setButtonText("Stop");
-        reviewTab.bypassBtn.setTooltip("Bypass the cab — audition/monitor the DI dry. Toggle it live while playing to A/B.");
+        reviewTab.bypassBtn.setTooltip("Bypass the cab — audition/monitor the DI dry. Toggle it live while playing to A/B (level-matched).");
         reviewTab.bypassBtn.onClick = [this] { if (engine.conv.mode.load() != 0) reloadLiveIR(); };   // dry/wet A/B, live
-        reviewTab.playWetBtn.onClick = [this] { startWetAudition(); };
-        reviewTab.stopBtn.onClick    = [this] { engine.audition.stop();
-                                      engine.conv.stop();
-                                      reviewTab.playLiveBtn.setToggleState(false, juce::dontSendNotification); };
+        reviewTab.playBtn.setTooltip("Play the sample through the current mix / stop. Live monitoring has its own toggle.");
+        reviewTab.playBtn.onClick = [this] {
+            if (samplePlaying()) { engine.audition.stop(); if (engine.conv.mode.load() == 1) engine.conv.stop(); }
+            else startWetAudition();
+            reviewTab.playBtn.setPlaying(samplePlaying());
+        };
         reviewTab.takesCap.setText("TAKES", juce::dontSendNotification);
-        reviewTab.auditionCap.setText("AUDITION SAMPLE", juce::dontSendNotification);
-        reviewTab.liveCap.setText("LIVE TEST", juce::dontSendNotification);
-        for (auto* cap : { &reviewTab.takesCap, &reviewTab.auditionCap, &reviewTab.liveCap }) {
-            cap->setFont(juce::FontOptions(11.0f, juce::Font::bold));
-            cap->setColour(juce::Label::textColourId, brand::lilac);
-        }
+        reviewTab.takesCap.setFont(juce::FontOptions(11.0f, juce::Font::bold));
+        reviewTab.takesCap.setColour(juce::Label::textColourId, brand::lilac);
         reviewTab.playLiveBtn.setButtonText("Play live");
         reviewTab.playLiveBtn.setClickingTogglesState(true);
         reviewTab.playLiveBtn.setColour(juce::TextButton::buttonOnColourId, brand::orange.darker(0.1f));
@@ -216,6 +213,13 @@ public:
             if (on) { engine.audition.stop(); reloadLiveIR(); engine.conv.setMode(2); }
             else engine.conv.stop();
         };
+        reviewTab.recBtn.setClickingTogglesState(true);
+        reviewTab.recBtn.setColour(juce::TextButton::buttonOnColourId, juce::Colours::red.darker(0.1f));
+        reviewTab.recBtn.setColour(juce::TextButton::textColourOnId, juce::Colours::white);
+        reviewTab.recBtn.setTooltip("Record the DRY live input into your own sample (saved to the User group). Starts Play live if it isn't running.");
+        reviewTab.recBtn.onClick = [this] { reviewTab.recBtn.getToggleState() ? startSampleRecording() : finishSampleRecording(); };
+        reviewTab.deleteSampleBtn.setTooltip("Delete the selected USER sample from disk (factory samples stay).");
+        reviewTab.deleteSampleBtn.onClick = [this] { deleteSelectedUserSample(); };
         reviewTab.liveInBox.setTextWhenNothingSelected("input");
         reviewTab.liveInBox.onChange = [this] { engine.liveChannel.store(juce::jmax(0, reviewTab.liveInBox.getSelectedId() - 1)); };
         reviewTab.loopToggle.onClick = [this] { engine.audition.loop.store(reviewTab.loopToggle.getToggleState()); };
@@ -241,54 +245,18 @@ public:
                     else clearReviewState();
                 }));
         };
-        reviewTab.mixerCaption.setText("MIXER", juce::dontSendNotification);
-        reviewTab.mixerCaption.setFont(juce::FontOptions(11.0f, juce::Font::bold));
-        reviewTab.mixerCaption.setColour(juce::Label::textColourId, brand::lilac);
-        reviewTab.resetMixBtn.setTooltip("Flat mixer: 0 dB, no phase/shift, all filters off, no solo/mute.");
-        reviewTab.resetMixBtn.onClick = [this] {
-            juce::AlertWindow::showOkCancelBox(juce::MessageBoxIconType::QuestionIcon, "Reset mixer",
-                "Reset every channel and the Master to flat? (0 dB, no phase/shift, filters off, no solo/mute)",
-                "Reset", "Cancel", this,
-                juce::ModalCallbackFunction::create([this](int ok) {
-                    if (ok != 1) return;
-                    auto flat = [](MixStrip& s) {                          // silent — one render + one save at the end
-                        s.gain.setValue(0.0, juce::dontSendNotification);
-                        if (!s.isMaster) {
-                            s.phase.setValue(0.0, juce::dontSendNotification); s.phase.updateText();
-                            s.shift.setValue(0.0, juce::dontSendNotification); s.shift.updateText();
-                            s.solo.setToggleState(false, juce::dontSendNotification);
-                            s.mute.setToggleState(false, juce::dontSendNotification);
-                        }
-                        s.hpBtn.setToggleState(false, juce::dontSendNotification);
-                        s.lpBtn.setToggleState(false, juce::dontSendNotification);
-                        s.hpfHz = 80.0; s.hpfSlopeDb = 24; s.lpfHz = 8000.0; s.lpfSlopeDb = 12;
-                    };
-                    for (auto& mr : reviewTab.mixRows) flat(*mr);
-                    if (reviewTab.masterStrip) flat(*reviewTab.masterStrip);
-                    refreshSpectrum(); saveMixToTake();
-                }));
+        // The graph's view menu (gear overlay, top-left) — grows more options later.
+        reviewTab.spectrumView.onGearMenu = [this](juce::Rectangle<int> screenArea) {
+            juce::PopupMenu m;
+            m.addItem(1, "Live spectrum analyser", true, analyzerOn);
+            m.showMenuAsync(juce::PopupMenu::Options().withTargetScreenArea(screenArea), [this](int r) {
+                if (r == 1) { analyzerOn = !analyzerOn; updateLiveSpectrum(); }
+            });
         };
-        reviewTab.analyzerBtn.setClickingTogglesState(true);                         // a pressed-in button = analyser on (default)
-        reviewTab.analyzerBtn.setToggleState(true, juce::dontSendNotification);
-        reviewTab.analyzerBtn.setColour(juce::TextButton::buttonOnColourId, brand::violet.darker(0.08f));
-        reviewTab.analyzerBtn.setColour(juce::TextButton::textColourOnId, juce::Colours::white);
-        reviewTab.analyzerBtn.setTooltip("Show the live spectrum analyser over the curve while playing.");
-        reviewTab.analyzerBtn.onClick = [this] { updateLiveSpectrum(); };
-        reviewTab.monoFilterBtn.setClickingTogglesState(true);
-        reviewTab.monoFilterBtn.setTooltip("HPF/LPF for this single mic (drag the graph lines to shape the cab). Phase/shift are inter-mic-only.");
-        reviewTab.monoFilterBtn.onClick = [this] {
-            const bool on = reviewTab.monoFilterBtn.getToggleState();
-            monoStrip.hpf.on = on; monoStrip.lpf.on = on;
-            refreshSpectrum(); saveMixToTake(); if (engine.conv.mode.load() != 0) reloadLiveIR();
-        };
-        reviewTab.spectrumView.onFilterDrag = [this](double hpHz, int hpDb, double lpHz, int lpDb) {   // graph → active strip / mono HPF/LPF
-            if (reviewTab.mixRows.size() >= 2) {
-                MixStrip* a = activeStrip ? activeStrip : reviewTab.masterStrip.get();
-                if (a == nullptr) return;
-                a->hpfHz = hpHz; a->hpfSlopeDb = hpDb; a->lpfHz = lpHz; a->lpfSlopeDb = lpDb;
-            } else {                                                  // single mic: its own HPF/LPF (no strip)
-                monoStrip.hpf.hz = hpHz; monoStrip.hpf.slopeDb = hpDb; monoStrip.lpf.hz = lpHz; monoStrip.lpf.slopeDb = lpDb;
-            }
+        reviewTab.spectrumView.onFilterDrag = [this](double hpHz, int hpDb, double lpHz, int lpDb) {   // graph → the active strip
+            MixStrip* a = activeStrip ? activeStrip : reviewTab.masterStrip.get();
+            if (a == nullptr) return;
+            a->hpfHz = hpHz; a->hpfSlopeDb = hpDb; a->lpfHz = lpHz; a->lpfSlopeDb = lpDb;
             refreshSpectrum(); if (engine.conv.mode.load() != 0) reloadLiveIR();
         };
         reviewTab.spectrumView.onFilterDragEnd = [this] { saveMixToTake(); };
@@ -296,10 +264,15 @@ public:
             if (idx >= 0 && idx < (int)reviewTab.mixRows.size()) setActiveStrip(reviewTab.mixRows[(size_t)idx].get());
             else if (reviewTab.masterStrip) setActiveStrip(reviewTab.masterStrip.get());
         };
-        reviewTab.editMicsBtn.setTooltip("Set model / axis for this take's mics (metadata is editable any time).");
-        reviewTab.editMicsBtn.onClick = [this] { showEditMicsDialog(); };
-        reviewTab.importIrsBtn.setTooltip("Import already-captured IR wav files (up to 8) as a new take, to blend them here.");
-        reviewTab.importIrsBtn.onClick = [this] { importIrFiles(); };
+        reviewTab.addChannelBtn.setTooltip("Add already-captured IR file(s) to THIS take as new channels (onset-aligned to the set).");
+        reviewTab.addChannelBtn.onClick = [this] { appendIrFiles(); };
+        reviewTab.spectrumView.onPickLegend = [this](int i) {          // legend row → its strip (last row = MIX/Master)
+            if (i >= 0 && i < (int)reviewTab.mixRows.size()) setActiveStrip(reviewTab.mixRows[(size_t)i].get());
+            else if (reviewTab.masterStrip) setActiveStrip(reviewTab.masterStrip.get());
+        };
+        reviewTab.importIrsBtn.setButtonText("New take...");
+        reviewTab.importIrsBtn.setTooltip("Create a new empty take (you name it), then add IR files via the console's [+].");
+        reviewTab.importIrsBtn.onClick = [this] { newEmptyTake(); };
 
         // ---- Export tab (ui/tabs/ExportTab.h owns the widgets; the buttons are wired here) ----
         exportTab.authorField.onReturnKey = [this] { saveSessionJson(); };
@@ -431,17 +404,19 @@ public:
         }
         updateCalibVerdict();
         updateLiveSpectrum();
-        { const bool playing = engine.audition.playing.load() || engine.conv.mode.load() != 0;   // Stop glows red while playing
-          if (playing != stopIsRed) {
-              stopIsRed = playing;
-              reviewTab.stopBtn.setColour(juce::TextButton::buttonColourId, playing ? juce::Colours::red.darker(0.15f) : juce::Colour(0xff2b2f36));
-              reviewTab.stopBtn.repaint();
-          } }
+        if (engine.rec.recording.load()) {
+            if (engine.conv.mode.load() != 2 || engine.rec.full()) finishSampleRecording();   // live stopped / buffer full
+            else reviewTab.reviewInfo.setText("REC " + juce::String((double)engine.rec.len.load() / engine.sampleRate, 1)
+                                            + " s - press Rec again to save.", juce::dontSendNotification);
+        }
+        reviewTab.playBtn.setPlaying(samplePlaying());                 // ▶/■ follows the actual stream state
     }
+    // The SAMPLE is audible (pre-rendered audition, or the DI-through-IR stream; mode 2 = live monitor).
+    bool samplePlaying() const { return engine.audition.playing.load() || engine.conv.mode.load() == 1; }
     // FFT the playing output (audition / live monitor) into the Review analyser overlay.
     void updateLiveSpectrum() {
         const bool onReview = tabs.getCurrentTabIndex() == 2;
-        if (onReview && reviewTab.analyzerBtn.getToggleState() && !lastIRs.empty() && (engine.audition.playing.load() || engine.conv.mode.load() != 0)) {
+        if (onReview && analyzerOn && !lastIRs.empty() && (engine.audition.playing.load() || engine.conv.mode.load() != 0)) {
             static constexpr int F = 2048;
             std::vector<float> buf((size_t)F);
             const uint32_t w = engine.specW.load(std::memory_order_relaxed);
@@ -814,13 +789,122 @@ private:
         else if (keep.isNotEmpty()) c.setText(keep, juce::dontSendNotification);
     }
 
+    // ---- the sample recorder: capture the dry live input into a persisted user sample ----
+    void startSampleRecording() {
+        if (engine.conv.mode.load() != 2) {                            // recording implies live monitoring
+            reviewTab.playLiveBtn.setToggleState(true, juce::dontSendNotification);
+            engine.audition.stop(); reloadLiveIR(); engine.conv.setMode(2);
+        }
+        engine.rec.start();
+        reviewTab.reviewInfo.setText("REC - play; press Rec again to save (up to 60 s).", juce::dontSendNotification);
+    }
+    void finishSampleRecording() {
+        engine.rec.stop();
+        reviewTab.recBtn.setToggleState(false, juce::dontSendNotification);
+        const int n = engine.rec.len.load();
+        if (n < (int)(engine.sampleRate / 4)) {                        // under 250 ms: nothing worth keeping
+            reviewTab.reviewInfo.setText("Recording too short - nothing saved.", juce::dontSendNotification);
+            return;
+        }
+        std::vector<float> clip(engine.rec.buf.begin(), engine.rec.buf.begin() + n);
+        {   // trim the silence around the phrase (keep a little air before the onset)
+            const auto on = ocap::irimport::onsetIndex(clip);
+            float pk = 0.0f; for (float v : clip) pk = std::max(pk, std::abs(v));
+            int endI = (int)clip.size() - 1;
+            while (endI > 0 && std::abs(clip[(size_t)endI]) < 0.02f * pk) --endI;
+            const int startI = (int)std::max<std::ptrdiff_t>(0, on - (std::ptrdiff_t)(engine.sampleRate * 0.05));
+            clip.assign(clip.begin() + startI, clip.begin() + std::min((int)clip.size(), endI + (int)(engine.sampleRate * 0.25)));
+        }
+        const double sr = engine.sampleRate;
+        textPrompt("Sample name", "riff " + juce::Time::getCurrentTime().formatted("%H-%M"),
+                   [this, clip = std::move(clip), sr](juce::String nm) {
+            const juce::String base(ocap::exportplan::sanitizeName(nm.toStdString()));
+            auto f = samplesDir().getChildFile(base + ".wav");
+            int c = 2;
+            while (f.existsAsFile()) f = samplesDir().getChildFile(base + " " + juce::String(c++) + ".wav");
+            oc::wav_write_mono_f32(f.getFullPathName().toStdString(),
+                                   std::vector<double>(clip.begin(), clip.end()), sr);
+            DiClip dc; dc.name = f.getFileNameWithoutExtension(); dc.sr = sr; dc.samples = clip;
+            userClips.push_back(std::move(dc));
+            rebuildDiBox(userClips.back().name);
+            reviewTab.reviewInfo.setText("Saved \"" + f.getFileNameWithoutExtension()
+                                       + "\" (" + juce::String((double)clip.size() / sr, 1) + " s) to your samples.",
+                                         juce::dontSendNotification);
+        });
+    }
+    void deleteSelectedUserSample() {
+        const int idx = reviewTab.diBox.getSelectedId() - 1;           // ids are sequential: user first
+        if (idx < 0 || idx >= (int)userClips.size()) {
+            reviewTab.reviewInfo.setText("Factory samples can't be deleted - pick one of your own (User group).",
+                                         juce::dontSendNotification);
+            return;
+        }
+        const juce::String nm = userClips[(size_t)idx].name;
+        juce::AlertWindow::showOkCancelBox(juce::MessageBoxIconType::QuestionIcon, "Delete sample",
+            "Delete \"" + nm + "\" from your samples? (the file is removed)", "Delete", "Cancel", this,
+            juce::ModalCallbackFunction::create([this, idx, nm](int okPressed) {
+                if (okPressed != 1) return;
+                for (const auto& f : samplesDir().findChildFiles(juce::File::findFiles, false))
+                    if (f.getFileNameWithoutExtension() == nm) f.deleteFile();
+                userClips.erase(userClips.begin() + idx);
+                rebuildDiBox({});
+                reviewTab.reviewInfo.setText("Deleted \"" + nm + "\".", juce::dontSendNotification);
+            }));
+    }
+
+    // ---- DI sample library: factory riffs + the user's own clips (persisted in app-data) ----
+    struct DiClip { juce::String name; std::vector<float> samples; double sr = 48000.0; };
+    static juce::File samplesDir() {
+        auto d = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+                     .getChildFile("OrbitCapture").getChildFile("samples");
+        d.createDirectory();
+        return d;
+    }
+    void scanUserSamples() {
+        for (const auto& f : samplesDir().findChildFiles(juce::File::findFiles, false)) {
+            std::unique_ptr<juce::AudioFormatReader> rd(diFormats.createReaderFor(f));
+            if (rd == nullptr || rd->lengthInSamples <= 0 || rd->sampleRate <= 0) continue;
+            const int n = (int)std::min<juce::int64>(rd->lengthInSamples, (juce::int64)(rd->sampleRate * 60.0));
+            juce::AudioBuffer<float> b((int)rd->numChannels, n);
+            rd->read(&b, 0, n, 0, true, true);
+            DiClip c; c.name = f.getFileNameWithoutExtension(); c.sr = rd->sampleRate;
+            c.samples.assign(b.getReadPointer(0), b.getReadPointer(0) + n);
+            if (b.getNumChannels() > 1)
+                for (int i = 0; i < n; ++i) c.samples[(size_t)i] = 0.5f * (b.getReadPointer(0)[i] + b.getReadPointer(1)[i]);
+            userClips.push_back(std::move(c));
+        }
+    }
+    // User clips first (their session, their sound), then the factory set — grouped + headed.
+    // Combo ids stay sequential across the groups so id-1 indexes allClips().
+    std::vector<const DiClip*> allClips() const {
+        std::vector<const DiClip*> v;
+        for (const auto& c : userClips)    v.push_back(&c);
+        for (const auto& c : factoryClips) v.push_back(&c);
+        return v;
+    }
+    void rebuildDiBox(const juce::String& select) {
+        auto& box = reviewTab.diBox;
+        const juce::String keep = select.isNotEmpty() ? select : box.getText();
+        box.clear(juce::dontSendNotification);
+        int id = 1, selId = 0;
+        auto addGroup = [&](const char* head, const std::vector<DiClip>& grp) {
+            if (grp.empty()) return;
+            box.addSectionHeading(head);
+            for (const auto& c : grp) { box.addItem(c.name, id); if (c.name == keep) selId = id; ++id; }
+        };
+        addGroup("User", userClips);
+        addGroup("Factory", factoryClips);
+        box.setSelectedId(selId > 0 ? selId : 1, juce::dontSendNotification);
+    }
+
     // Render a DI riff (dry, or convolved through the last captured IR) and hand it to the
     // audio thread. Runs on the message thread; the swap discipline (stop → assign within
     // reserved capacity → start) is owned by the stream types in audio/RtStreams.h.
     std::vector<float> resampledDI() const {                          // selected DI clip at the device rate
-        if (diClips.empty()) return {};
-        const int idx = juce::jlimit(0, (int)diClips.size() - 1, reviewTab.diBox.getSelectedId() - 1);
-        const auto& clip = diClips[(size_t)idx];
+        const auto clips = allClips();
+        if (clips.empty()) return {};
+        const int idx = juce::jlimit(0, (int)clips.size() - 1, reviewTab.diBox.getSelectedId() - 1);
+        const auto& clip = *clips[(size_t)idx];
         if (clip.samples.empty()) return {};
         if (std::abs(engine.sampleRate - clip.sr) < 1.0) return clip.samples;
         const int outN = juce::jmax(1, (int)((double)clip.samples.size() * engine.sampleRate / clip.sr));
@@ -829,10 +913,38 @@ private:
         interp.process(clip.sr / engine.sampleRate, clip.samples.data(), di.data(), outN);
         return di;
     }
+    // The wet monitoring gain: loudness-match against the ACTUAL selected sample — RMS of the
+    // clip dry vs through the mix (first ~2 s). Band-blind norms (peak, whole-band energy) kept
+    // failing because guitar energy sits exactly under the cab's hump. Falls back to unit-energy
+    // when no clip is loaded (live-input-only monitoring).
+    float monitorGainFor(const std::vector<float>& ir) const {
+        double e = 0.0;
+        for (float v : ir) e += (double)v * v;
+        float g = e > 0.0 ? (float)(1.0 / std::sqrt(e)) : 1.0f;
+        const auto di = resampledDI();
+        const size_t n = std::min(di.size(), (size_t)(engine.sampleRate * 2.0));
+        if (n > 256) {
+            const std::vector<float> seg(di.begin(), di.begin() + (std::ptrdiff_t)n);
+            const auto wet = ocap::convolveDI(seg, ir);
+            double rd = 0, rw = 0;
+            for (float v : seg) rd += (double)v * v;
+            for (float v : wet) rw += (double)v * v;
+            if (rd > 0.0 && rw > 0.0) g = (float)std::sqrt(rd / rw);
+        }
+        return g;
+    }
     void reloadLiveIR() {                                             // push the current output IR into the live convolver
-        const std::vector<float> ir = reviewTab.bypassBtn.getToggleState() ? std::vector<float>{ 1.0f }   // dry passthrough
-                                                                 : currentOutputIR();
+        const bool dry = reviewTab.bypassBtn.getToggleState();
+        std::vector<float> ir = dry ? std::vector<float>{ 1.0f }      // bypass = the untouched reference:
+                                    : currentOutputIR();              // unity, independent of ALL mix controls
         if (ir.empty()) return;
+        if (!dry) {
+            // Wet: loudness-matched to the dry sample, then the Master fader on top as the mix's
+            // own (deliberate) level offset. Master never touches the bypass side.
+            const float master = (float)std::pow(10.0, (reviewTab.masterStrip ? gatherMaster().gainDb : 0.0) / 20.0);
+            const float g = monitorGainFor(ir) * master;              // currentOutputIR had master inside; the
+            for (float& v : ir) v *= g;                               // match wiped it — re-applied once here
+        }
         juce::AudioBuffer<float> buf(1, (int)ir.size());
         std::copy(ir.begin(), ir.end(), buf.getWritePointer(0));
         engine.liveConv.loadImpulseResponse(std::move(buf), lastIRSr,
@@ -887,34 +999,44 @@ private:
     // for a single-mic capture (no mixer).
     std::vector<float> currentOutputIR() const {
         if (lastIRs.empty()) return {};
-        if (reviewTab.mixRows.size() == lastIRs.size() && reviewTab.mixRows.size() >= 2) return computeBlend();
-        std::vector<float> v = lastIRs[0];                            // single mic: raw IR through its own HPF/LPF
-        ocap::applyFilters(v, monoStrip.hpf, monoStrip.lpf, lastIRSr);// (phase/shift/solo/master are inter-mic-only → not offered)
-        return v;
+        if (reviewTab.mixRows.size() == lastIRs.size()) return computeBlend();   // 1 channel = a 1-strip console
+        return lastIRs[0];
     }
     // Redraw the frequency-response view. Multi-mic: the mix overlay + the ACTIVE strip's draggable HPF/LPF lines
     // (tinted its colour). Single-mic: just the raw curve, no draggable lines.
     void refreshSpectrum() {
         if (lastIRs.empty()) return;
-        if (reviewTab.mixRows.size() >= 2) {
-            renderBlendOverlay();
-            const MixStrip* a = activeStrip ? activeStrip : reviewTab.masterStrip.get();
-            if (a) reviewTab.spectrumView.setActiveFilter(true, a->hpBtn.getToggleState(), a->lpBtn.getToggleState(),
-                                                a->hpfHz, a->hpfSlopeDb, a->lpfHz, a->lpfSlopeDb, a->colour);
-        } else {                                                     // single mic: the FILTERED curve + its own draggable HPF/LPF
-            reviewTab.spectrumView.setIR(currentOutputIR(), lastIRSr);
-            const bool on = monoStrip.hpf.on || monoStrip.lpf.on;
-            reviewTab.spectrumView.setActiveFilter(on, monoStrip.hpf.on, monoStrip.lpf.on,
-                                         monoStrip.hpf.hz, monoStrip.hpf.slopeDb, monoStrip.lpf.hz, monoStrip.lpf.slopeDb,
-                                         lastIRColours.empty() ? brand::lilac : lastIRColours[0]);
-        }
+        renderBlendOverlay();
+        const MixStrip* a = activeStrip ? activeStrip : reviewTab.masterStrip.get();
+        if (a) reviewTab.spectrumView.setActiveFilter(true, a->hpBtn.getToggleState(), a->lpBtn.getToggleState(),
+                                            a->hpfHz, a->hpfSlopeDb, a->lpfHz, a->lpfSlopeDb, a->colour);
     }
     // Highlight the clicked strip and aim the graph's draggable filter lines at its HPF/LPF.
     void setActiveStrip(MixStrip* s) {
         activeStrip = s;
         for (auto& mp : reviewTab.mixRows) mp->setActive(mp.get() == s);
         if (reviewTab.masterStrip) reviewTab.masterStrip->setActive(reviewTab.masterStrip.get() == s);
+        updateLegend();
         refreshSpectrum();
+    }
+    // The graph's colour legend: one row per mic (full description — the strips only carry the
+    // short token) + the MIX row; the active strip's row is highlighted. Click a row → its strip.
+    void updateLegend() {
+        std::vector<SpectrumView::LegendEntry> le;
+        if (!reviewTab.mixRows.empty()) {
+            const auto strips = gatherStrips();
+            for (int m = 0; m < (int)reviewTab.mixRows.size() && m < lastIRNames.size(); ++m) {
+                const auto desc = lastIRFileBases[m].fromFirstOccurrenceOf(" - ", false, false);
+                le.push_back({ lastIRNames[m] + (desc.isNotEmpty() ? "   " + desc : juce::String()),
+                               lastIRColours[(size_t)m], !ocap::channelAudible(strips, (size_t)m) });
+            }
+            le.push_back({ "MIX", juce::Colours::white, false });
+        }
+        int act = (int)le.size() - 1;                                  // default highlight: the MIX row
+        for (int m = 0; m < (int)reviewTab.mixRows.size(); ++m)
+            if (activeStrip == reviewTab.mixRows[(size_t)m].get()) act = m;
+        const bool empty = le.empty();
+        reviewTab.spectrumView.setLegend(std::move(le), empty ? -1 : act);
     }
     std::vector<ocap::StripParams> gatherStrips() const {
         std::vector<ocap::StripParams> v; v.reserve(reviewTab.mixRows.size());
@@ -935,18 +1057,17 @@ private:
         MixStrip* sp = &s;
         auto live   = [this] { refreshSpectrum(); if (engine.conv.mode.load() != 0) reloadLiveIR(); };
         auto select = [this, sp] { setActiveStrip(sp); };
-        s.name.setFont(juce::FontOptions(12.0f, s.isMaster ? juce::Font::bold : juce::Font::plain));
         if (s.isMaster) s.name.setColour(juce::Label::textColourId, juce::Colours::white);
-        s.gain.setSliderStyle(juce::Slider::LinearHorizontal);
-        s.gain.setTextBoxStyle(juce::Slider::TextBoxRight, false, 52, 18);
-        s.gain.setRange(-24.0, 6.0, 0.1);
+        s.gain.setRange(-24.0, 6.0, 0.1);                             // fader style/textbox live in MixStrip (the view)
         s.gain.setValue(0.0, juce::dontSendNotification);
         s.gain.setTextValueSuffix(" dB");
         s.gain.setColour(juce::Slider::thumbColourId, col);
         s.gain.setColour(juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);   // no frame round the dB value
         s.gain.setDoubleClickReturnValue(true, 0.0);                  // double-click → 0 dB
-        s.gain.setTooltip(s.isMaster ? "Master output level. Double-click = 0 dB."
-                                     : "Mic level in the mix. Double-click = 0 dB.");
+        s.gain.setTooltip(s.isMaster ? "MONITOR level (audition / live) - the exported MIX is peak-normalized,\n"
+                                       "so this never changes the files. Pull it down when many mics clip,\n"
+                                       "or level-match against bypass. Double-click = 0 dB."
+                                     : "Mic level in the mix (the balance IS the sound). Double-click = 0 dB.");
         s.gain.onValueChange = live; s.gain.onDragStart = select; s.gain.onDragEnd = [this] { saveMixToTake(); };
         if (!s.isMaster) {
             auto cfgKnob = [this, col](EditKnob& sl) {                    // rotary KNOB, value drawn INSIDE; single-click = type
@@ -998,44 +1119,122 @@ private:
         }
         s.hpBtn.setTooltip("High-pass this " + what + " (default 80 Hz, 24 dB/oct). Drag its line on the graph: left/right = cutoff, up/down = slope; wheel = slope; double-click = reset.");
         s.lpBtn.setTooltip("Low-pass this " + what + " (default 8 kHz, 12 dB/oct). Drag its line on the graph: left/right = cutoff, up/down = slope; wheel = slope; double-click = reset.");
+        if (s.isMaster) {                                             // Reset + Auto live on the Master strip
+            s.reset.setTooltip("Flat mixer: 0 dB, no phase/shift, all filters off, no solo/mute.");
+            s.reset.onClick = [this] { confirmResetMixer(); };
+            s.autoBtn.setTooltip("Auto-align: time-shift (\xc2\xb1" + juce::String(kShiftMs, 0)
+                                 + " ms) + polarity of every channel against a reference - kills comb filtering. "
+                                   "Reference: the selected channel strip, otherwise the loudest channel. "
+                                   "You don't need to know which mic stood where - only mutual alignment is audible.");
+            s.autoBtn.onClick = [this] { autoAlignMixer(); };
+        }
         s.onSelect = select;
+    }
+    // "Auto" on the Master strip: cross-correlate every channel against a reference and set the
+    // shift knobs (+ polarity via phase 180) so the set sums coherently (core/AutoAlign.h).
+    // The reference needs no knowledge of the rig: the SELECTED channel strip if there is one,
+    // otherwise the loudest channel (usually the close mic — the most confident anchor). For
+    // comb-killing the choice barely matters: only MUTUAL alignment is audible.
+    void autoAlignMixer() {
+        if (reviewTab.mixRows.size() < 2 || lastIRs.size() != reviewTab.mixRows.size()) return;
+        size_t ref = 0; bool selected = false;
+        for (size_t m = 0; m < reviewTab.mixRows.size(); ++m)          // the selected strip wins...
+            if (activeStrip == reviewTab.mixRows[m].get()) { ref = m; selected = true; }
+        if (!selected) {                                               // ...else the loudest channel
+            double best = -1.0;
+            for (size_t m = 0; m < lastIRs.size(); ++m) {
+                double e = 0; for (float v : lastIRs[m]) e += (double)v * v;
+                if (e > best) { best = e; ref = m; }
+            }
+        }
+        const auto al = ocap::autoalign::align(lastIRs, lastIRSr, ref, kShiftMs);
+        juce::String msg = "Auto-aligned to " + reviewTab.mixRows[ref]->name.getText()
+                         + (selected ? " (selected):" : " (loudest):");
+        for (size_t m = 0; m < al.size(); ++m) {
+            auto& s = *reviewTab.mixRows[m];
+            s.shift.setValue(al[m].shiftMs, juce::dontSendNotification); s.shift.updateText();
+            if (m == ref) continue;                                    // the reference keeps its phase seasoning
+            s.phase.setValue(al[m].invert ? 180.0 : 0.0, juce::dontSendNotification); s.phase.updateText();
+            msg << "  " << s.name.getText() << " " << (al[m].shiftMs >= 0 ? "+" : "")
+                << juce::String(al[m].shiftMs, 2) << "ms" << (al[m].invert ? " inv" : "");
+        }
+        updateLegend(); refreshSpectrum(); saveMixToTake();
+        reviewTab.reviewInfo.setText(msg, juce::dontSendNotification);
+    }
+    void confirmResetMixer() {
+        juce::AlertWindow::showOkCancelBox(juce::MessageBoxIconType::QuestionIcon, "Reset mixer",
+            "Reset every channel and the Master to flat? (0 dB, no phase/shift, filters off, no solo/mute)",
+            "Reset", "Cancel", this,
+            juce::ModalCallbackFunction::create([this](int ok) {
+                if (ok != 1) return;
+                auto flat = [](MixStrip& s) {                          // silent — one render + one save at the end
+                    s.gain.setValue(0.0, juce::dontSendNotification);
+                    if (!s.isMaster) {
+                        s.phase.setValue(0.0, juce::dontSendNotification); s.phase.updateText();
+                        s.shift.setValue(0.0, juce::dontSendNotification); s.shift.updateText();
+                        s.solo.setToggleState(false, juce::dontSendNotification);
+                        s.mute.setToggleState(false, juce::dontSendNotification);
+                    }
+                    s.hpBtn.setToggleState(false, juce::dontSendNotification);
+                    s.lpBtn.setToggleState(false, juce::dontSendNotification);
+                    s.hpfHz = 80.0; s.hpfSlopeDb = 24; s.lpfHz = 8000.0; s.lpfSlopeDb = 12;
+                };
+                for (auto& mr : reviewTab.mixRows) flat(*mr);
+                if (reviewTab.masterStrip) flat(*reviewTab.masterStrip);
+                updateLegend(); refreshSpectrum(); saveMixToTake();
+            }));
     }
     void rebuildMixer() {
         reviewTab.hasCapture = !lastIRs.empty();
         reviewTab.mixRows.clear();
         reviewTab.masterStrip.reset();
         activeStrip = nullptr;
-        if (lastIRs.size() >= 2) {
+        overlayRefDb = std::numeric_limits<double>::quiet_NaN();       // new take → re-anchor the display reference
+        if (!lastIRs.empty()) {
             for (int m = 0; m < (int)lastIRs.size(); ++m) {
                 auto s = std::make_unique<MixStrip>(false);
-                s->colour = lastIRColours[(size_t)m];
-                s->name.setText(lastIRNames[m], juce::dontSendNotification);
+                s->setAccent(lastIRColours[(size_t)m]);
+                // Console column: short token on the strip ("C414"), input as the context line;
+                // the full description lives in the tooltip + the graph legend (duplicate models
+                // are told apart by colour + inN).
+                const auto model = lastIRFileBases[m].upToFirstOccurrenceOf(" - ", false, false).trim();
+                const int sp = model.lastIndexOfChar(' ');
+                s->name.setText(sp >= 0 ? model.substring(sp + 1) : model, juce::dontSendNotification);
+                s->sub.setText(lastIRNames[m].fromLastOccurrenceOf("(", false, false)
+                                             .upToFirstOccurrenceOf(")", false, false), juce::dontSendNotification);
+                const auto desc = lastIRFileBases[m].fromFirstOccurrenceOf(" - ", false, false);
+                s->setTooltip(lastIRNames[m] + (desc.isNotEmpty() ? "  -  " + desc : juce::String())
+                              + "\n(double-click / right-click: edit; x: delete)");
+                s->kill.setVisible(lastIRs.size() > 1);              // the last channel goes with the take, not alone
+                s->onEdit   = [this, m] { showChannelEditor(m); };
+                s->onDelete = [this, m] { confirmDeleteChannel(m); };
                 wireStrip(*s);
                 reviewTab.addAndMakeVisible(s.get());
                 reviewTab.mixRows.push_back(std::move(s));
             }
             reviewTab.masterStrip = std::make_unique<MixStrip>(true);
-            reviewTab.masterStrip->colour = juce::Colours::white;
+            reviewTab.masterStrip->setAccent(juce::Colours::white);
             reviewTab.masterStrip->name.setText("Master", juce::dontSendNotification);
             wireStrip(*reviewTab.masterStrip);
             reviewTab.addAndMakeVisible(reviewTab.masterStrip.get());
             activeStrip = reviewTab.masterStrip.get();
             reviewTab.masterStrip->setActive(true);
         }
-        const bool haveMixer = reviewTab.mixRows.size() >= 2;
-        const bool mono = (! haveMixer && ! lastIRs.empty());        // single mic: HPF/LPF only, no strip panel
-        if (mono) monoStrip = ocap::StripParams{};                   // fresh take → filters off (loadTake restores from mono_filter)
-        reviewTab.resetMixBtn.setVisible(haveMixer); reviewTab.mixerCaption.setVisible(haveMixer);
-        reviewTab.analyzerBtn.setVisible(haveMixer || mono);
-        reviewTab.monoFilterBtn.setVisible(mono);
-        reviewTab.monoFilterBtn.setToggleState(monoStrip.hpf.on || monoStrip.lpf.on, juce::dontSendNotification);
+        const bool haveMixer = !reviewTab.mixRows.empty();
+        reviewTab.addChannelBtn.setVisible(currentTake >= 0 && currentTake < (int)takeDirs.size()
+                                           && (int)reviewTab.mixRows.size() < kMaxMics);
+        updateLegend();
         reviewTab.resized();
         if (haveMixer) renderBlendOverlay();
+        else {                                                         // an empty take shows an empty graph —
+            reviewTab.spectrumView.setIR({}, 0.0);                     // stale curves would be the PREVIOUS take's
+            reviewTab.spectrumView.setActiveFilter(false, false, false, 80.0, 24, 8000.0, 12, brand::lilac);
+        }
     }
     // The picture where phase eats frequencies: per-mic curves + the thick blend curve, columns
     // tinted red where the blend sits below the incoherent power sum (cancellation) / green above.
     void renderBlendOverlay() {
-        if (reviewTab.mixRows.size() < 2 || lastIRs.empty()) return;
+        if (reviewTab.mixRows.empty() || lastIRs.empty()) return;
         const auto strips = gatherStrips(); const auto master = gatherMaster();
         std::vector<SpectrumView::Trace> tr;
         std::vector<std::vector<double>> micC(lastIRs.size());
@@ -1061,8 +1260,15 @@ private:
             mMag.resize(mc.size());
             for (size_t p = 0; p < mc.size(); ++p) mMag[p] = std::pow(10.0, std::min(0.0, mc[p]) / 20.0);
         }
-        double ref = -1e9;                                             // one shared reference: the blend's peak
-        for (double v : blendC) ref = std::max(ref, v);
+        // One shared display reference, ANCHORED when the take loads: the initial blend peak
+        // + 3 dB headroom, then never re-derived — so gain moves visibly move the picture
+        // (per-render re-normalizing made Master -24 dB look like nothing happened).
+        if (std::isnan(overlayRefDb)) {
+            double pk = -1e9;
+            for (double v : blendC) pk = std::max(pk, v);
+            overlayRefDb = pk + 6.0;
+        }
+        const double ref = overlayRefDb;
         // v0.7.0: interference (coherent − incoherent power sum, where phase eats/reinforces) comes from
         // core; the Master-stopband tint gate is a display weight (not valid dB math), so it stays here.
         namespace off = felitronics::analysis::offline;
@@ -1078,16 +1284,16 @@ private:
         const bool masterActive = (activeStrip == nullptr) || (reviewTab.masterStrip && activeStrip == reviewTab.masterStrip.get());
         for (size_t m = 0; m < micC.size(); ++m) {                     // non-active mics first (dimmed underneath)
             if ((int)m == activeMic) continue;
+            if (!ocap::channelAudible(strips, m)) continue;            // muted/off-solo mics leave the graph (legend keeps them)
             for (auto& v : micC[m]) v -= ref;
-            const float a = ocap::channelAudible(strips, m) ? (activeMic >= 0 || masterActive ? 0.5f : 0.75f) : 0.18f;
+            const float a = activeMic >= 0 || masterActive ? 0.5f : 0.75f;
             tr.push_back({ std::move(micC[m]), lastIRColours[m].withAlpha(a), 1.0f, false });
         }
         for (auto& v : blendC) v -= ref;                               // the mix (white); brighter/thicker when Master is active
         tr.push_back({ std::move(blendC), juce::Colours::white.withAlpha(masterActive ? 1.0f : 0.7f), masterActive ? 2.6f : 1.7f, true });
-        if (activeMic >= 0) {                                          // the selected mic's curve, highlighted on top
+        if (activeMic >= 0 && ocap::channelAudible(strips, (size_t)activeMic)) {   // the selected mic's curve, highlighted on top
             for (auto& v : micC[(size_t)activeMic]) v -= ref;
-            tr.push_back({ std::move(micC[(size_t)activeMic]),
-                           lastIRColours[(size_t)activeMic].withAlpha(ocap::channelAudible(strips, (size_t)activeMic) ? 1.0f : 0.4f), 2.6f, false });
+            tr.push_back({ std::move(micC[(size_t)activeMic]), lastIRColours[(size_t)activeMic], 2.6f, false });
         }
         reviewTab.spectrumView.setTraces(std::move(tr), std::move(interf));
     }
@@ -1279,68 +1485,23 @@ private:
                        juce::dontSendNotification);
     }
 
-    // "Session from files": import 1-8 already-captured IR wavs as a NEW take. The maths (common
-    // rate = the highest source rate, equal lengths, count/duration caps) is core/IrImport.h
-    // (headless-tested); here we decode, save through SessionStore::saveTake — an imported take is
-    // indistinguishable downstream (same mixer, audition, export) — and load it into the mixer.
-    // Mic models start as the file names (metadata is editable forever via Edit mics); axis stays
-    // empty, so the export gate reminds the user to describe the mics before a bundle ships.
-    void importIrFiles() {
-        importChooser = std::make_unique<juce::FileChooser>("Import IR files (up to 8 - one per mic)",
-                                                            juce::File(), "*.wav;*.aif;*.aiff;*.flac");
-        importChooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles
-                                       | juce::FileBrowserComponent::canSelectMultipleItems,
-            [this](const juce::FileChooser& fc) {
-                const auto files = fc.getResults();
-                if (files.isEmpty()) return;
-                std::vector<ocap::irimport::SourceIr> src;
-                juce::StringArray skipped;
-                for (const auto& f : files) {
-                    std::unique_ptr<juce::AudioFormatReader> rd(diFormats.createReaderFor(f));
-                    if (rd == nullptr || rd->lengthInSamples <= 0 || rd->sampleRate <= 0) { skipped.add(f.getFileName()); continue; }
-                    juce::AudioBuffer<float> b((int)rd->numChannels, (int)rd->lengthInSamples);
-                    rd->read(&b, 0, (int)rd->lengthInSamples, 0, true, true);
-                    ocap::irimport::SourceIr s;
-                    s.name = f.getFileNameWithoutExtension().toStdString();
-                    s.sr = rd->sampleRate;
-                    s.samples.assign(b.getReadPointer(0), b.getReadPointer(0) + b.getNumSamples());
-                    src.push_back(std::move(s));
-                }
-                const auto set = ocap::irimport::normalize(std::move(src), kMaxMics);
-                if (set.irs.empty()) {
-                    reviewTab.reviewInfo.setText("Nothing imported - could not read: " + skipped.joinIntoString(", "),
-                                                 juce::dontSendNotification);
-                    return;
-                }
-                saveImportedTake(set, skipped);
-            });
-    }
-    void saveImportedTake(const ocap::irimport::ImportSet& set, const juce::StringArray& skipped) {
-        if (sessionDir == juce::File()) createSessionDir();
-        const int N = (int)set.irs.size();
-        ocap::TakeMeta take;
-        stampTakeHeader(take);
-        take.sampleRate = set.sampleRate;                              // the files' rate, not the device's
-        take.interface_ = "file import";
-        for (int m = 0; m < N; ++m) {
-            ocap::MicMeta mm;
-            mm.model = set.names[(size_t)m];                           // start from the file name; Edit mics refines it
-            mm.inputChannel = m + 1;
-            mm.slot = m;
-            take.mics.push_back(mm);
-        }
-        take.measured.irLen = set.irs[0].size();
-        for (int m = 0; m < N; ++m) take.mix.push_back(ocap::StripParams{});
-        const auto dir = store_.saveTake(sessionDir, take, {}, set.irs, set.sampleRate);   // no raw sweeps: IR-only take
-        adoptNewTake(dir);
-        loadTake(currentTake);                                         // straight into the mixer
-        juce::String info = dir.getFileName() + ": imported " + juce::String(N) + " IR" + (N > 1 ? "s" : "")
-                          + " at " + juce::String(set.sampleRate / 1000.0, 1) + " kHz.";
-        if (set.truncatedCount)  info << "  Only the first " << juce::String(kMaxMics) << " files were used.";
-        if (set.truncatedLength) info << "  Long files were trimmed to 2 s.";
-        if (!skipped.isEmpty())  info << "  Could not read: " << skipped.joinIntoString(", ") << ".";
-        info << (N > 1 ? "  Blend them below." : "");
-        reviewTab.reviewInfo.setText(info, juce::dontSendNotification);
+    // A named EMPTY take: the user gives it a name, then fills it with IR files via the
+    // console's [+]. Killed the old files->new-take flow: its synthetic mic-join label was long
+    // and stale after channel edits — a user-given name stays honest.
+    void newEmptyTake() {
+        textPrompt("New take name", "", [this](juce::String nm) {
+            if (sessionDir == juce::File()) createSessionDir();
+            ocap::TakeMeta take;
+            stampTakeHeader(take);
+            take.name = nm.toStdString();
+            take.sampleRate = 0.0;                                     // the first added channel sets it
+            take.interface_ = "file import";
+            const auto dir = store_.saveTake(sessionDir, take, {}, {}, engine.sampleRate);
+            adoptNewTake(dir);
+            loadTake(currentTake);
+            reviewTab.reviewInfo.setText("Empty take \"" + nm + "\" - add IR files with the [+] next to the console.",
+                                         juce::dontSendNotification);
+        });
     }
 
     // ---- session persistence ----
@@ -1437,83 +1598,161 @@ private:
         } else { takeDirs.clear(); currentTake = -1; clearReviewState(); refreshTakeBox(); }
         validateCabForm();                                             // live cab-form red + export warnings
     }
-    // Edit the loaded take's per-mic model + axis (metadata is mutable; the captured audio is not).
-    // Fixes takes captured with the model left blank — which otherwise block Export forever.
-    void showEditMicsDialog() {
-        if (currentTake < 0 || currentTake >= (int)takeDirs.size()) return;
+    // ---- the console IS the take editor: per-channel edit / delete / append ----
+    // A small callout anchored to the strip — the channel's whole mutable-forever metadata:
+    // model (a new name lands in the user mic list), axis, position, optional distance.
+    void showChannelEditor(int m) {
+        if (currentTake < 0 || currentTake >= (int)takeDirs.size()
+            || m < 0 || m >= (int)reviewTab.mixRows.size()) return;
         const auto dir = takeDirs[(size_t)currentTake];
-        const auto v = juce::JSON::parse(dir.getChildFile("take.json").loadFileAsString());
-        auto* arr = v.getProperty("mics", juce::var()).getArray();
-        if (!arr || arr->isEmpty()) return;
-        micMetaRows.clear();
-        micMetaPanel.removeAllChildren();
-        const int N = arr->size(), W = 560, rowH = 34, top = 12;
-        for (int m = 0; m < N; ++m) {
-            const auto& mv = (*arr)[m];
-            auto rr = std::make_unique<MicMetaRow>();
-            rr->sw.colour = kSlotColours[juce::jlimit(0, kMaxMics - 1, (int) mv.getProperty("slot", m))];
-            const juce::String loc = mv.getProperty("location", "").toString();
-            const juce::String pos = mv.getProperty("position", "").toString();
-            const juce::String dist = mv.getProperty("distance_input", "").toString();
-            juce::String info = "mic" + juce::String(m + 1) + "   in" + mv.getProperty("input_channel", m + 1).toString();
-            if (loc.isNotEmpty())                 info << "   " << loc;
-            if (pos.isNotEmpty() && pos != loc)   info << " / " << pos;
-            if (dist.isNotEmpty())                info << "   " << dist;
-            rr->info.setText(info, juce::dontSendNotification);
-            rr->info.setFont(juce::FontOptions(12.0f));
-            rr->info.setColour(juce::Label::textColourId, juce::Colours::lightgrey);
-            rr->model.setEditableText(true);
-            rr->model.setTextWhenNothingSelected("mic model");
-            refreshMicCombo(rr->model, mv.getProperty("model", "").toString());
-            for (int a = 0; a < vocab::axis.size(); ++a) rr->axis.addItem(vocab::axis[a], a + 1);
-            rr->axis.setTextWhenNothingSelected("axis");
-            const auto ax = mv.getProperty("axis", "").toString();
-            if (ax.isNotEmpty()) rr->axis.setSelectedId(vocab::axis.indexOf(ax) + 1, juce::dontSendNotification);
-            const int y = top + m * rowH;
-            for (juce::Component* c : { (juce::Component*) &rr->sw, (juce::Component*) &rr->info,
-                                        (juce::Component*) &rr->model, (juce::Component*) &rr->axis })
-                micMetaPanel.addAndMakeVisible(c);
-            rr->sw.setBounds(12, y + 9, 12, 14);
-            rr->info.setBounds(30, y, 190, 30);
-            rr->model.setBounds(224, y + 2, 200, 26);
-            rr->axis.setBounds(432, y + 2, 116, 26);
-            micMetaRows.push_back(std::move(rr));
+        const auto meta = store_.loadTakeMeta(dir);
+        if (m >= (int)meta.mics.size()) return;
+        struct Panel : juce::Component {
+            juce::ComboBox model, axis, position;
+            juce::TextEditor dist; juce::Label distLbl { {}, "distance" }, unitLbl;
+            juce::TextButton save { "Save" };
+            void resized() override {
+                auto r = getLocalBounds().reduced(10);
+                model.setBounds(r.removeFromTop(26)); r.removeFromTop(6);
+                axis.setBounds(r.removeFromTop(26)); r.removeFromTop(6);
+                position.setBounds(r.removeFromTop(26)); r.removeFromTop(6);
+                { auto a = r.removeFromTop(26);
+                  distLbl.setBounds(a.removeFromLeft(66));
+                  dist.setBounds(a.removeFromLeft(64)); a.removeFromLeft(6);
+                  unitLbl.setBounds(a.removeFromLeft(30)); }
+                r.removeFromTop(8);
+                save.setBounds(r.removeFromTop(26).removeFromRight(80));
+            }
+        };
+        auto panel = std::make_unique<Panel>();
+        panel->setSize(240, 200);
+        for (juce::Component* c : { (juce::Component*)&panel->model, (juce::Component*)&panel->axis,
+                                    (juce::Component*)&panel->position, (juce::Component*)&panel->dist,
+                                    (juce::Component*)&panel->distLbl, (juce::Component*)&panel->unitLbl,
+                                    (juce::Component*)&panel->save })
+            panel->addAndMakeVisible(c);
+        panel->model.setEditableText(true);                            // type a NEW model -> user mic list
+        panel->model.setTextWhenNothingSelected("mic model");
+        refreshMicCombo(panel->model, juce::String(meta.mics[(size_t)m].model));
+        for (int a = 0; a < vocab::axis.size(); ++a) panel->axis.addItem(vocab::axis[a], a + 1);
+        panel->axis.setTextWhenNothingSelected("axis");
+        { const juce::String ax(meta.mics[(size_t)m].axis);
+          if (ax.isNotEmpty()) panel->axis.setSelectedId(vocab::axis.indexOf(ax) + 1, juce::dontSendNotification); }
+        panel->position.setEditableText(true);
+        panel->position.setTextWhenNothingSelected("position (optional)");
+        for (int i = 0; i < vocab::positions.size(); ++i) panel->position.addItem(vocab::positions[i], i + 1);
+        { const juce::String pos(meta.mics[(size_t)m].position);
+          if (pos.isNotEmpty()) panel->position.setText(pos, juce::dontSendNotification); }
+        panel->dist.setInputRestrictions(6, "0123456789.");
+        panel->dist.setTextToShowWhenEmpty("-", juce::Colours::grey);
+        if (meta.mics[(size_t)m].distanceMm > 0) {
+            const double v = distIsInches() ? meta.mics[(size_t)m].distanceMm / 25.4
+                                            : meta.mics[(size_t)m].distanceMm / 10.0;
+            panel->dist.setText(juce::String(v, (v == (double)(int)v) ? 0 : 1), false);
         }
-        const int by = top + N * rowH + 10;
-        micMetaCancel.setBounds(W - 176, by, 80, 26);
-        micMetaSave.setBounds(W - 88, by, 80, 26);
-        micMetaPanel.addAndMakeVisible(micMetaSave);
-        micMetaPanel.addAndMakeVisible(micMetaCancel);
-        micMetaSave.onClick   = [this] { if (auto* dw = micMetaSave.findParentComponentOfClass<juce::DialogWindow>())   dw->exitModalState(1); };
-        micMetaCancel.onClick = [this] { if (auto* dw = micMetaCancel.findParentComponentOfClass<juce::DialogWindow>()) dw->exitModalState(0); };
-        micMetaPanel.setSize(W, by + 26 + 12);
-
-        juce::DialogWindow::LaunchOptions opt;
-        opt.content.setNonOwned(&micMetaPanel);
-        opt.dialogTitle = "Edit mic info - " + dir.getFileName();
-        opt.dialogBackgroundColour = juce::Colour(0xff23252b);
-        opt.escapeKeyTriggersCloseButton = true;
-        opt.useNativeTitleBar = false;
-        opt.resizable = false;
-        auto* dw = opt.launchAsync();
-        dw->centreAroundComponent(this, micMetaPanel.getWidth() + 20, micMetaPanel.getHeight() + 40);
-        juce::ModalComponentManager::getInstance()->attachCallback(dw,
-            juce::ModalCallbackFunction::create([this, dir](int result) {
-                if (result != 1) return;
-                auto v2 = juce::JSON::parse(dir.getChildFile("take.json").loadFileAsString());
-                auto* a2 = v2.getProperty("mics", juce::var()).getArray();
-                if (!a2) return;
-                for (int m = 0; m < (int) micMetaRows.size() && m < a2->size(); ++m)
-                    if (auto* mo = (*a2)[m].getDynamicObject()) {
-                        mo->setProperty("model", micMetaRows[(size_t) m]->model.getText().trim());
-                        mo->setProperty("axis",  micMetaRows[(size_t) m]->axis.getText());
+        panel->unitLbl.setText(distUnitText(), juce::dontSendNotification);
+        auto* p = panel.get();
+        p->save.onClick = [this, m, p, dir] {
+            const juce::String mdl = p->model.getText().trim();
+            if (mdl.isNotEmpty() && !listStore.get("mic").contains(mdl, true)) {
+                listStore.add("mic", mdl);                             // a typed model joins the user mic list
+                for (auto& mr : takeTab.micRows) refreshMicCombo(mr->mic, mr->mic.getText());
+            }
+            const auto v = juce::JSON::parse(dir.getChildFile("take.json").loadFileAsString());
+            if (auto* arr = v.getProperty("mics", juce::var()).getArray())
+                if (m < arr->size())
+                    if (auto* mo = (*arr)[m].getDynamicObject()) {
+                        mo->setProperty("model", mdl);
+                        mo->setProperty("axis",  p->axis.getText());
+                        mo->setProperty("position", p->position.getText().trim());
+                        const double dv = p->dist.getText().getDoubleValue();
+                        if (p->dist.getText().trim().isNotEmpty() && dv > 0.0) {
+                            mo->setProperty("distance_mm", juce::roundToInt(distIsInches() ? dv * 25.4 : dv * 10.0));
+                            mo->setProperty("distance_input", p->dist.getText().trim() + " " + distUnitText());
+                        } else {
+                            mo->setProperty("distance_mm", 0);
+                            mo->setProperty("distance_input", juce::String());
+                        }
+                        if (auto* o = v.getDynamicObject()) o->setProperty("mic", (*arr)[0]);   // v1 mirror
+                        dir.getChildFile("take.json").replaceWithText(juce::JSON::toString(v));
                     }
-                if (auto* o = v2.getDynamicObject()) o->setProperty("mic", (*a2)[0]);   // keep the mics[0] mirror in sync
-                dir.getChildFile("take.json").replaceWithText(juce::JSON::toString(v2));
-                loadTake(currentTake);                                                   // refresh names / file bases
-                refreshTakeBox();                                                        // refresh the take labels
-                refreshExportStatus();                                                   // models set → fewer warnings
+            if (auto* box = p->findParentComponentOfClass<juce::CallOutBox>()) box->dismiss();
+            loadTake(currentTake);                                     // refresh names / legend / labels
+            refreshTakeBox();
+            refreshExportStatus();
+        };
+        const auto anchor = getLocalArea(reviewTab.mixRows[(size_t)m].get(),
+                                         reviewTab.mixRows[(size_t)m]->getLocalBounds());
+        juce::CallOutBox::launchAsynchronously(std::move(panel), localAreaToGlobal(anchor), nullptr);
+    }
+    void confirmDeleteChannel(int m) {
+        if (currentTake < 0 || currentTake >= (int)takeDirs.size()
+            || m < 0 || m >= (int)reviewTab.mixRows.size() || reviewTab.mixRows.size() < 2) return;
+        const auto dir = takeDirs[(size_t)currentTake];
+        juce::AlertWindow::showOkCancelBox(juce::MessageBoxIconType::WarningIcon, "Delete channel",
+            "Delete " + reviewTab.mixRows[(size_t)m]->name.getText() + " from " + dir.getFileName()
+            + "? Its audio files are removed from the take - this cannot be undone.",
+            "Delete", "Cancel", this,
+            juce::ModalCallbackFunction::create([this, m, dir](int okPressed) {
+                if (okPressed != 1) return;
+                if (!store_.removeChannel(dir, m)) return;
+                loadTake(currentTake);
+                refreshTakeBox();
+                refreshExportStatus();
             }));
+    }
+    // [+] on the console: append IR file(s) to THIS take — resampled to the take's rate, trimmed/
+    // padded to its length, onset-aligned to channel 1 so the blend shares one time reference.
+    void appendIrFiles() {
+        if (currentTake < 0 || currentTake >= (int)takeDirs.size()) return;
+        importChooser = std::make_unique<juce::FileChooser>("Add IR files to this take",
+                                                            juce::File(), "*.wav;*.aif;*.aiff;*.flac");
+        importChooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles
+                                       | juce::FileBrowserComponent::canSelectMultipleItems,
+            [this](const juce::FileChooser& fc) {
+                const auto files = fc.getResults();
+                if (files.isEmpty()) return;
+                const auto dir = takeDirs[(size_t)currentTake];
+                bool haveRef = !lastIRs.empty();                       // a fresh named take: the first file rules
+                std::ptrdiff_t refOnset = haveRef ? ocap::irimport::onsetIndex(lastIRs[0]) : 0;
+                size_t len = haveRef ? lastIRs[0].size() : 0;
+                double targetSr = haveRef ? lastIRSr : 0.0;
+                auto meta = store_.loadTakeMeta(dir);
+                juce::StringArray skipped;
+                int added = 0;
+                for (const auto& f : files) {
+                    if ((int)meta.mics.size() >= kMaxMics) { skipped.add(f.getFileName() + " (take is full)"); continue; }
+                    std::unique_ptr<juce::AudioFormatReader> rd(diFormats.createReaderFor(f));
+                    if (rd == nullptr || rd->lengthInSamples <= 0 || rd->sampleRate <= 0) { skipped.add(f.getFileName()); continue; }
+                    juce::AudioBuffer<float> b((int)rd->numChannels, (int)rd->lengthInSamples);
+                    rd->read(&b, 0, (int)rd->lengthInSamples, 0, true, true);
+                    std::vector<float> mono(b.getReadPointer(0), b.getReadPointer(0) + b.getNumSamples());
+                    if (targetSr <= 0.0) targetSr = rd->sampleRate;    // empty take: adopt the first file's rate
+                    std::vector<double> ir = std::abs(rd->sampleRate - targetSr) < 1.0
+                        ? std::vector<double>(mono.begin(), mono.end())
+                        : ocap::resampleIR(mono, rd->sampleRate, targetSr);
+                    if (len == 0) len = std::min(ir.size(), (size_t)std::llround(targetSr * 2.0));   // first channel sets the length (2 s cap)
+                    ir.resize(len, 0.0);                               // the set's common length
+                    if (!haveRef) { refOnset = ocap::irimport::onsetIndex(ir); haveRef = true; }   // 1st channel IS the reference
+                    else ocap::irimport::alignOnsetTo(ir, refOnset);   // others join its time base
+                    ocap::MicMeta mm;
+                    mm.model = f.getFileNameWithoutExtension().toStdString();
+                    mm.location = "import";
+                    mm.inputChannel = (int)meta.mics.size() + 1;
+                    { std::vector<ocap::micset::MicRowSpec> specs;     // first free colour slot
+                      for (const auto& x : meta.mics) specs.push_back({ x.location, x.position, 0.0, x.inputChannel - 1, x.slot });
+                      mm.slot = juce::jmax(0, ocap::micset::firstFreeSlot(specs, kMaxMics)); }
+                    if (store_.appendChannel(dir, mm, ir, targetSr)) { ++added; meta.mics.push_back(mm); }
+                    else skipped.add(f.getFileName());
+                }
+                loadTake(currentTake);
+                refreshTakeBox();
+                refreshExportStatus();
+                juce::String info = dir.getFileName() + ": added " + juce::String(added) + " channel"
+                                  + (added == 1 ? "" : "s") + " (onset-aligned to the set).";
+                if (!skipped.isEmpty()) info << "  Skipped: " << skipped.joinIntoString(", ") << ".";
+                reviewTab.reviewInfo.setText(info, juce::dontSendNotification);
+            });
     }
     void scanTakes() {
         takeDirs = store_.scanTakes(sessionDir);
@@ -1522,6 +1761,9 @@ private:
     }
     juce::String takeLabelFor(const juce::File& d) const {
         const auto t = store_.loadTakeMeta(d);                         // legacy-migrated → v0 takes label too
+        if (!t.name.empty())                                           // a user-given name stays honest through edits
+            return d.getFileName() + "  " + ocap::report::takeTime(t.timestamp) + "   " + juce::String(t.name)
+                 + "  (" + juce::String((int)t.mics.size()) + " ch)";
         juce::String mics;
         for (const auto& m : t.mics)
             mics << (mics.isEmpty() ? "" : " + ") << (m.model.empty() ? "?" : juce::String(m.model))
@@ -1539,7 +1781,6 @@ private:
         lastIRs.clear(); lastIRNames.clear(); lastIRColours.clear(); lastIRFileBases.clear();
         rebuildMixer();
         reviewTab.spectrumView.setIR({}, 0.0);
-        reviewTab.editMicsBtn.setEnabled(false);
     }
     // Load a saved take back into Review: IRs from disk, names/colours/mix from take.json. store_.loadTake
     // already applies the pre-'mics' take (v0/v1) -> [mic] fallback (SessionVar.h's takeFromVar).
@@ -1571,11 +1812,14 @@ private:
         for (int m = 0; m < (int)reviewTab.mixRows.size() && m < (int)lt.take.mix.size(); ++m)
             reviewTab.mixRows[(size_t)m]->setParams(lt.take.mix[(size_t)m]);
         if (reviewTab.masterStrip) reviewTab.masterStrip->setMasterParams(lt.take.master);
-        if (lt.take.monoFilter) monoStrip = *lt.take.monoFilter;        // single-mic HPF/LPF
+        if (lt.take.monoFilter && reviewTab.mixRows.size() == 1) {      // legacy mono takes: mono_filter -> strip 0
+            auto p = reviewTab.mixRows[0]->params();
+            p.hpf = lt.take.monoFilter->hpf; p.lpf = lt.take.monoFilter->lpf;
+            reviewTab.mixRows[0]->setParams(p);
+        }
         suppressMixSave = false;
         setActiveStrip(reviewTab.masterStrip ? reviewTab.masterStrip.get() : nullptr);     // Master is the default active strip; also refreshes the curve
         if (engine.conv.mode.load() != 0) reloadLiveIR();
-        reviewTab.editMicsBtn.setEnabled(true);
         reviewTab.reviewInfo.setText({}, juce::dontSendNotification);            // the take is shown in the combo — no redundant line
     }
     void saveMixToTake() {
@@ -1587,8 +1831,9 @@ private:
         // key (if any) untouched rather than stamping a bogus one onto a take that never had one.
         const std::optional<ocap::MasterParams> master =
             reviewTab.masterStrip ? std::optional<ocap::MasterParams>(reviewTab.masterStrip->masterParams()) : std::nullopt;
-        const std::optional<ocap::StripParams> mono =
-            reviewTab.mixRows.size() < 2 ? std::optional<ocap::StripParams>(monoStrip) : std::nullopt;
+        const std::optional<ocap::StripParams> mono =                  // 1-channel: mirror the strip into the
+            reviewTab.mixRows.size() == 1 ? std::optional<ocap::StripParams>(reviewTab.mixRows[0]->params())
+                                          : std::nullopt;              // legacy mono_filter key (old readers)
         store_.saveMix(takeDirs[(size_t)currentTake], mix, master, mono);
         if (engine.conv.mode.load() != 0) reloadLiveIR();                             // keep the live monitor in sync with the mix
     }
@@ -1666,7 +1911,8 @@ private:
     std::vector<juce::Colour> lastIRColours;
     KnobLNF knobLnf;                                 // phase/shift dials (value inside) — declared before reviewTab (outlives its strips)
     MixStrip* activeStrip = nullptr;                  // whose HPF/LPF the graph drag edits (default: Master)
-    ocap::StripParams monoStrip;                     // single-mic HPF/LPF state (phase/shift/gain/solo unused)
+    double overlayRefDb = std::numeric_limits<double>::quiet_NaN();   // per-take display anchor (initial blend peak + 6 dB)
+    bool analyzerOn = true;                           // live-analyser overlay (the graph's gear menu)
 
     // ---- the four tab views (ui/tabs/): dumb widgets + layout; all wiring stays here ----
     AudioTab audioTab;
@@ -1675,25 +1921,18 @@ private:
     ExportTab exportTab { listStore };               // owns the CabForm (declared after listStore)
     // HPF/LPF sweep ranges (a strip's on/off is an explicit toggle now, not a parked-extreme sentinel).
     static constexpr double kShiftMs = 2.0;          // +/- time-shift range (ms); 0 = off
-    // Post-hoc editor for a saved take's per-mic metadata (model/axis) — the audio is immutable but
-    // the metadata is mutable forever, so a take captured with the model left blank can still be fixed.
-    struct MicMetaRow { TintPanel sw { juce::Colours::orange }; juce::Label info; juce::ComboBox model, axis; };
-    std::vector<std::unique_ptr<MicMetaRow>> micMetaRows;
-    juce::Component micMetaPanel;
-    juce::TextButton micMetaSave { "Save" }, micMetaCancel { "Cancel" };
 
     std::unique_ptr<juce::FileChooser> exportChooser;
     std::unique_ptr<juce::FileChooser> importChooser;  // Mixer tab: import IR files as a take
     double lastIRSr = 48000.0;                 // capture-time rate of the master IRs
     juce::StringArray lastIRFileBases;         // per-mic name part: "AKG C414 - Cap 1in" (author+cab prepended at export)
     BrandHeader header;
+    juce::TooltipWindow tooltips { this };     // one shared tooltip window — without it setTooltip is silent
     juce::TabbedComponent tabs { juce::TabbedButtonBar::TabsAtTop };
     // liveConv/liveScratch/liveChannel/liveMaxBlock + the conv stream now live on `engine`.
-    bool stopIsRed = false;
     // live spectrum analyser: audio thread pushes the playing output into a ring (engine.specRing/
     // specW/specPush); the timer FFTs it.
-    struct DiClip { juce::String name; std::vector<float> samples; double sr = 48000.0; };
-    std::vector<DiClip> diClips;                      // built-in riffs + user-loaded DI files
+    std::vector<DiClip> factoryClips, userClips;      // built-in riffs · user samples (persist in app-data; DiClip above)
     std::unique_ptr<juce::FileChooser> diChooser;
     juce::AudioFormatManager diFormats;
     // the audition stream (buffer + playing/loop/pos/len) now lives on `engine.audition`.

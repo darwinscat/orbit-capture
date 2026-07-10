@@ -8,97 +8,115 @@
 #include <memory>
 #include <vector>
 
-// Tab "3 Review": takes · audition sample · live test · the blend mixer + response graph. Dumb view — it
-// owns the widgets, the mixer-strip STORAGE and the layout; all wiring (audition, strips, saves)
-// lives in the orchestrator, which flips `hasCapture` when IRs arrive/leave.
-struct ReviewTab : juce::Component {
-    juce::ComboBox takeBox;                    // pick a take
-    juce::TextButton deleteTakeBtn;
-    juce::TextButton editMicsBtn { "Edit mics" };
-    juce::TextButton importIrsBtn { "+ IRs" }; // import already-captured IR files as a new take
-    juce::ComboBox diBox;
-    juce::TextButton loadDiBtn;
-    juce::ToggleButton bypassBtn { "bypass" };    // audition/monitor the DRY DI (unit-impulse IR)
-    juce::TextButton playWetBtn, stopBtn;
-    juce::ToggleButton loopToggle { "loop" };
-    juce::Label reviewInfo;                    // a slim status line above the mixer
-    // Play live: monitor a chosen input through the current IR (RT-safe partitioned convolution).
-    juce::TextButton playLiveBtn;
-    juce::ComboBox liveInBox;
-    juce::TextButton analyzerBtn { "spectrum" };     // pressed-in = live analyser overlay on (default); sits by Reset
-    juce::TextButton resetMixBtn { "Reset" };        // mixer -> flat: 0 dB, no phase, filters off, no solo/mute
-    juce::TextButton monoFilterBtn { "F" };          // single-mic: enable HPF/LPF (shaped on the graph, no strip)
-    juce::Label mixerCaption;
-    juce::Label auditionCap, takesCap, liveCap;   // section captions: TAKES · AUDITION SAMPLE · LIVE TEST
-    SpectrumView spectrumView;
-    juce::TextButton navToExport;              // guided "-> next step"
+// The sample transport button: ONE play/stop — green with a ▶ when silent, red with a ■ while
+// playing (the icons are drawn, not glyph text). The orchestrator flips `playing` from its timer.
+struct PlayStopButton : juce::Button {
+    bool playing = false;
+    PlayStopButton() : juce::Button("playstop") {}
+    void setPlaying(bool p) { if (playing != p) { playing = p; repaint(); } }
+    void paintButton(juce::Graphics& g, bool over, bool down) override {
+        auto b = getLocalBounds().toFloat().reduced(1.0f);
+        auto col = playing ? juce::Colour(0xffb63a34) : juce::Colour(0xff2f7d43);   // red = playing · green = ready
+        if (down) col = col.darker(0.25f); else if (over) col = col.brighter(0.12f);
+        g.setColour(col);
+        g.fillRoundedRectangle(b, 4.0f);
+        g.setColour(juce::Colours::black.withAlpha(0.35f));
+        g.drawRoundedRectangle(b, 4.0f, 1.0f);
+        const auto c = b.getCentre();
+        g.setColour(juce::Colours::white);                             // just the icon — it explains itself
+        if (playing) g.fillRect(juce::Rectangle<float>(12.0f, 12.0f).withCentre(c));            // ■
+        else { juce::Path p; p.addTriangle(c.x - 6.0f, c.y - 7.5f, c.x - 6.0f, c.y + 7.5f, c.x + 9.0f, c.y);
+               g.fillPath(p); }                                                                  // ▶
+    }
+};
 
-    std::vector<std::unique_ptr<MixStrip>> mixRows;  // one channel strip per mic (multi-mic takes)
+// Tab "3 Mixer" — the take EDITOR. Takes on top; the console (one vertical strip per channel,
+// a [+] column to append imported IRs, then Master) full-width; the response graph with the
+// colour legend; and a two-row transport under it (Sample row · Live row). One channel gets the
+// same console as eight — no special mono mode. Dumb view — it owns the widgets, the strip
+// STORAGE and the layout; all wiring lives in the orchestrator.
+struct ReviewTab : juce::Component {
+    static constexpr int kStripsH = 302;       // console region height
+
+    juce::Label takesCap;                      // "TAKES"
+    juce::ComboBox takeBox;                    // pick a take
+    juce::TextButton importIrsBtn { "New from files..." };   // a NEW take from already-captured IR files
+    juce::TextButton deleteTakeBtn;
+
+    juce::TextButton addChannelBtn { "+" };    // console column: append an IR to THIS take
+    std::vector<std::unique_ptr<MixStrip>> mixRows;  // one strip per channel
     std::unique_ptr<MixStrip> masterStrip;           // the Master bus (gain + HPF/LPF over the sum)
     bool hasCapture = false;                         // IRs loaded — the orchestrator keeps it in sync
 
+    SpectrumView spectrumView;
+    juce::Label reviewInfo;                    // a slim status line above the transport
+
+    // transport row 1 — the audition sample
+    juce::ComboBox diBox;
+    juce::TextButton loadDiBtn;
+    juce::TextButton deleteSampleBtn { juce::String::fromUTF8("\xc3\x97") };   // delete the selected USER sample
+    juce::ToggleButton bypassBtn { "bypass" };    // audition/monitor the DRY DI (unit-impulse IR)
+    PlayStopButton playBtn;                       // one green-▶ / red-■ sample transport
+    juce::ToggleButton loopToggle { "loop" };
+    // transport row 2 — live input through the mix (+ record your own sample)
+    juce::TextButton playLiveBtn;
+    juce::ComboBox liveInBox;
+    juce::TextButton recBtn { juce::String::fromUTF8("\xe2\x97\x8f Rec") };    // record the dry input into a user sample
+    juce::TextButton navToExport;              // guided "-> next step"
+
     ReviewTab() {
-        for (juce::Component* c : { (juce::Component*)&takeBox, (juce::Component*)&deleteTakeBtn,
-                                    (juce::Component*)&importIrsBtn,
-                                    (juce::Component*)&editMicsBtn, (juce::Component*)&diBox,
-                                    (juce::Component*)&loadDiBtn, (juce::Component*)&bypassBtn,
-                                    (juce::Component*)&playWetBtn, (juce::Component*)&stopBtn,
-                                    (juce::Component*)&loopToggle, (juce::Component*)&reviewInfo,
-                                    (juce::Component*)&spectrumView, (juce::Component*)&takesCap,
-                                    (juce::Component*)&auditionCap, (juce::Component*)&liveCap,
-                                    (juce::Component*)&mixerCaption, (juce::Component*)&resetMixBtn,
+        for (juce::Component* c : { (juce::Component*)&takesCap, (juce::Component*)&takeBox,
+                                    (juce::Component*)&importIrsBtn, (juce::Component*)&deleteTakeBtn,
+                                    (juce::Component*)&addChannelBtn,
+                                    (juce::Component*)&spectrumView, (juce::Component*)&reviewInfo,
+                                    (juce::Component*)&diBox, (juce::Component*)&loadDiBtn,
+                                    (juce::Component*)&deleteSampleBtn,
+                                    (juce::Component*)&bypassBtn, (juce::Component*)&playBtn,
+                                    (juce::Component*)&loopToggle,
                                     (juce::Component*)&playLiveBtn, (juce::Component*)&liveInBox,
-                                    (juce::Component*)&analyzerBtn, (juce::Component*)&monoFilterBtn,
+                                    (juce::Component*)&recBtn,
                                     (juce::Component*)&navToExport })
             addAndMakeVisible(c);
-        monoFilterBtn.setVisible(false);
-        resetMixBtn.setVisible(false); mixerCaption.setVisible(false); analyzerBtn.setVisible(false);
-        editMicsBtn.setEnabled(false);
+        addChannelBtn.setVisible(false);       // shown with the console
     }
 
     void resized() override {
         auto r = getLocalBounds().reduced(12);
-        takesCap.setBounds(r.removeFromTop(15)); r.removeFromTop(2);   // ---- 1) TAKES ----
+        takesCap.setBounds(r.removeFromTop(15)); r.removeFromTop(2);   // ---- TAKES ----
         { auto a = r.removeFromTop(26);
           deleteTakeBtn.setBounds(a.removeFromRight(28)); a.removeFromRight(6);
-          editMicsBtn.setBounds(a.removeFromRight(84)); a.removeFromRight(6);
-          importIrsBtn.setBounds(a.removeFromRight(64)); a.removeFromRight(6); takeBox.setBounds(a); }
-        r.removeFromTop(10);
-        auditionCap.setBounds(r.removeFromTop(15)); r.removeFromTop(2); // ---- 2) AUDITION SAMPLE ----
-        { auto a = r.removeFromTop(32);                                // sample | Load | bypass | Play .... | Stop | loop
-          diBox.setBounds(a.removeFromLeft(230)); a.removeFromLeft(8);
-          loadDiBtn.setBounds(a.removeFromLeft(96)); a.removeFromLeft(16);
-          bypassBtn.setBounds(a.removeFromLeft(88)); a.removeFromLeft(8);
-          loopToggle.setBounds(a.removeFromRight(60)); a.removeFromRight(6);
-          stopBtn.setBounds(a.removeFromRight(88)); a.removeFromRight(8);
-          playWetBtn.setBounds(a); }                                   // Play fills the middle
-        r.removeFromTop(10);
-        liveCap.setBounds(r.removeFromTop(15)); r.removeFromTop(2);    // ---- 3) LIVE TEST ----
-        { auto a = r.removeFromTop(30); playLiveBtn.setBounds(a.removeFromLeft(150)); a.removeFromLeft(10);
-          liveInBox.setBounds(a.removeFromLeft(240)); }
+          importIrsBtn.setBounds(a.removeFromRight(120)); a.removeFromRight(6); takeBox.setBounds(a); }
         r.removeFromTop(8);
-        reviewInfo.setBounds(r.removeFromTop(16)); r.removeFromTop(4);  // slim status line (playing / errors)
-        if (!mixRows.empty()) {                                    // the mixer (multi-mic sets only)
-            r.removeFromTop(8);
-            { auto a = r.removeFromTop(20);                        // caption ...... [spectrum] [Reset]
-              mixerCaption.setBounds(a.removeFromLeft(72).withSizeKeepingCentre(72, 18));
-              const auto rslot = a.removeFromRight(64).withSizeKeepingCentre(62, 18); a.removeFromRight(8);
-              resetMixBtn.setBounds(rslot);
-              monoFilterBtn.setBounds(rslot.withSizeKeepingCentre(28, 18));   // same slot; Reset (multi) / F (mono) are exclusive
-              analyzerBtn.setBounds(a.removeFromRight(88).withSizeKeepingCentre(88, 18)); }
-            r.removeFromTop(4);
-            const int stripH = 62;                                 // slimmer strips (smaller phase/shift dials)
-            for (auto& mp : mixRows) { mp->setBounds(r.removeFromTop(stripH)); r.removeFromTop(4); }
-            if (masterStrip) { r.removeFromTop(2); masterStrip->setBounds(r.removeFromTop(stripH)); }
-        } else if (hasCapture) {                                  // single mic: no strip, just the F (HPF/LPF) toggle + analyser
-            r.removeFromTop(8);
-            auto a = r.removeFromTop(20);
-            monoFilterBtn.setBounds(a.removeFromLeft(40).withSizeKeepingCentre(38, 18));
-            analyzerBtn.setBounds(a.removeFromRight(88).withSizeKeepingCentre(88, 18));
-            r.removeFromTop(4);
+        if (!mixRows.empty()) {                                        // ---- the console, full width ----
+            auto mid = r.removeFromTop(kStripsH);
+            const int n = (int)mixRows.size();
+            const int stripW = juce::jlimit(46, 72, (mid.getWidth() - 44) / (n + 1));
+            for (auto& mp : mixRows) { mp->setBounds(mid.removeFromLeft(stripW)); mid.removeFromLeft(4); }
+            addChannelBtn.setBounds(mid.removeFromLeft(26).withTrimmedTop(kStripsH / 2 - 26).withHeight(52));
+            mid.removeFromLeft(6);
+            if (masterStrip) masterStrip->setBounds(mid.removeFromLeft(stripW));
+            r.removeFromTop(6);
+        } else if (addChannelBtn.isVisible()) {                        // a fresh named take: just the [+]
+            auto mid = r.removeFromTop(64);
+            addChannelBtn.setBounds(mid.removeFromLeft(26).withSizeKeepingCentre(26, 52));
+            r.removeFromTop(6);
         }
-        r.removeFromTop(10);
-        navToExport.setBounds(r.removeFromBottom(30).removeFromRight(160).reduced(0, 2)); r.removeFromBottom(6);  // -> next step
-        spectrumView.setBounds(r.reduced(0, 2));                   // the EQ curve / blend overlay fills the rest
+        // ---- transport (bottom-up): Live row · Sample row · status line; the graph fills the rest
+        auto live = r.removeFromBottom(28);
+        { playLiveBtn.setBounds(live.removeFromLeft(110)); live.removeFromLeft(8);
+          liveInBox.setBounds(live.removeFromLeft(200)); live.removeFromLeft(8);
+          recBtn.setBounds(live.removeFromLeft(76));
+          navToExport.setBounds(live.removeFromRight(150)); }
+        r.removeFromBottom(4);
+        auto smp = r.removeFromBottom(28);
+        { diBox.setBounds(smp.removeFromLeft(220)); smp.removeFromLeft(6);
+          loadDiBtn.setBounds(smp.removeFromLeft(76)); smp.removeFromLeft(4);
+          deleteSampleBtn.setBounds(smp.removeFromLeft(24)); smp.removeFromLeft(10);
+          bypassBtn.setBounds(smp.removeFromLeft(80)); smp.removeFromLeft(8);
+          loopToggle.setBounds(smp.removeFromRight(58)); smp.removeFromRight(6);
+          playBtn.setBounds(smp.removeFromLeft(64)); }                 // fixed-width ▶/■ transport
+        r.removeFromBottom(4);
+        reviewInfo.setBounds(r.removeFromBottom(16)); r.removeFromBottom(2);
+        spectrumView.setBounds(r);                                     // the graph fills the rest
     }
 };

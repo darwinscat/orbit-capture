@@ -50,6 +50,7 @@ struct AudioEngine : public juce::AudioIODeviceCallback {
     std::vector<float> liveScratch;
     std::atomic<int> liveChannel { 0 };
     int liveMaxBlock = 512;
+    RecStream rec;                                // records the DRY live input (the user's own DI sample)
 
     // live spectrum analyser: audio thread pushes the playing output into a ring; the timer FFTs it
     static constexpr int kSpecRing = 4096;
@@ -69,6 +70,7 @@ struct AudioEngine : public juce::AudioIODeviceCallback {
         liveScratch.assign((size_t)liveMaxBlock, 0.0f);
         juce::dsp::ProcessSpec spec { sampleRate, (juce::uint32)liveMaxBlock, 1 };
         liveConv.prepare(spec); liveConv.reset();
+        rec.reserve((size_t)(sampleRate * 60.0));         // device stopped here — safe to (re)size
         prepareSweep();
     }
     void audioDeviceStopped() override {}
@@ -103,6 +105,7 @@ struct AudioEngine : public juce::AudioIODeviceCallback {
                         mono[i] = conv.buf[(size_t)dp++];
                     } else {                                                    // live input through the IR
                         mono[i] = (ch >= 0 && ch < numIn && in[ch]) ? in[ch][i] : 0.0f;
+                        if (rec.recording.load(std::memory_order_relaxed)) rec.push(mono[i]);   // DRY, pre-conv
                     }
                 }
                 float* chans[1] = { mono };

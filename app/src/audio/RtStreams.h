@@ -63,4 +63,23 @@ struct ConvStream {
     }
 };
 
+// The live-input recorder: the RT callback appends dry input samples while `recording` is up;
+// the message thread reads buf[0..len) only after taking it down. `reserve` RESIZES (the RT
+// side writes by index), so it must run while the device is stopped (audioDeviceAboutToStart).
+struct RecStream {
+    std::vector<float> buf;
+    std::atomic<bool> recording { false };
+    std::atomic<int>  len { 0 };
+
+    void reserve(std::size_t cap) { buf.assign(cap, 0.0f); }
+    void start() { len.store(0); recording.store(true, std::memory_order_release); }
+    void stop()  { recording.store(false, std::memory_order_release); }
+    bool full() const { return (std::size_t)len.load() >= buf.size(); }
+
+    inline void push(float s) {                          // RT side: append while space remains
+        const int i = len.load(std::memory_order_relaxed);
+        if ((std::size_t)i < buf.size()) { buf[(std::size_t)i] = s; len.store(i + 1, std::memory_order_relaxed); }
+    }
+};
+
 } // namespace ocap

@@ -95,6 +95,7 @@ inline juce::var measuredToVar (const MeasuredMeta& m) {
 inline TakeMeta takeFromVar (const juce::var& v) {
     TakeMeta t;
     t.app        = v.getProperty ("app", "").toString().toStdString();
+    t.name       = v.getProperty ("name", "").toString().toStdString();
     t.timestamp  = v.getProperty ("timestamp", "").toString().toStdString();
     t.interface_ = v.getProperty ("interface", "").toString().toStdString();
     t.sampleRate = (double) v.getProperty ("sample_rate", 0.0);
@@ -142,6 +143,7 @@ inline TakeMeta takeFromVar (const juce::var& v) {
 inline juce::var takeToVar (const TakeMeta& t) {
     auto* o = new juce::DynamicObject();
     o->setProperty ("app", juce::String (t.app));
+    if (! t.name.empty()) o->setProperty ("name", juce::String (t.name));   // additive: absent when unset
     o->setProperty ("timestamp", juce::String (t.timestamp));
     o->setProperty ("sample_rate", t.sampleRate);
     o->setProperty ("input_channel", t.inputChannel);

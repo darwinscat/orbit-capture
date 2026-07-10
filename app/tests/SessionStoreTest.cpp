@@ -128,6 +128,44 @@ int main() {
         }
     }
 
+    group ("appendChannel / removeChannel: the mixer as a take-channel editor");
+    {
+        const auto sessionDir = store.createSession ("edit cab");
+        ocap::TakeMeta take;
+        take.sampleRate = 48000.0;
+        ocap::MicMeta m1; m1.model = "SM57"; m1.inputChannel = 1; m1.slot = 0;
+        take.mics = { m1 };
+        take.mix.push_back (ocap::StripParams {});
+        const auto dir = store.saveTake (sessionDir, take, { ir1 }, { ir1 }, 48000.0);
+        ok (dir.getChildFile ("ir.wav").existsAsFile(), "single-mic take starts un-suffixed");
+
+        ocap::MicMeta add; add.model = "imported"; add.location = "import"; add.slot = 1; add.inputChannel = 2;
+        ok (store.appendChannel (dir, add, ir2, 48000.0), "append succeeds");
+        ok (dir.getChildFile ("ir_mic1.wav").existsAsFile() && dir.getChildFile ("raw_mic1.wav").existsAsFile(),
+            "1 -> 2: original files renamed to _mic1");
+        ok (dir.getChildFile ("ir_mic2.wav").existsAsFile() && ! dir.getChildFile ("ir.wav").existsAsFile(),
+            "new channel written as _mic2");
+        auto lt = store.loadTake (dir);
+        ok (lt.take.mics.size() == 2 && lt.take.mics[1].model == "imported" && lt.take.mix.size() == 2,
+            "metadata gained the channel + a default strip");
+        ok (lt.irs.size() == 2 && std::fabs (lt.irs[1][100] - ir2[100]) < 1e-4, "appended IR loads back");
+
+        ocap::MicMeta third; third.model = "third"; third.slot = 2;
+        store.appendChannel (dir, third, ir1, 48000.0);
+        ok (store.removeChannel (dir, 1), "remove the middle channel");
+        lt = store.loadTake (dir);
+        ok (lt.take.mics.size() == 2 && lt.take.mics[0].model == "SM57" && lt.take.mics[1].model == "third",
+            "middle removed, tail renumbered");
+        ok (std::fabs (lt.irs[1][100] - ir1[100]) < 1e-4, "renumbered file carries the right audio");
+
+        ok (store.removeChannel (dir, 1), "back down to one channel");
+        ok (dir.getChildFile ("ir.wav").existsAsFile() && ! dir.getChildFile ("ir_mic1.wav").existsAsFile(),
+            "2 -> 1: back to the un-suffixed name");
+        lt = store.loadTake (dir);
+        ok (lt.take.mics.size() == 1 && lt.irs.size() == 1, "single-channel take loads");
+        ok (! store.removeChannel (dir, 0), "the last channel refuses to be removed");
+    }
+
     root.deleteRecursively();
     return felitronics::test::report();
 }
