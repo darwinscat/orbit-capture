@@ -1,0 +1,56 @@
+{
+  "app": "OrbitCapture 0.1",
+  "timestamp": "20250201-090000",
+  "sample_rate": 48000.0,
+  "input_channel": 1,
+  "mics": [
+    {
+      "model": "MD421",
+      "location": "grille",
+      "position": "cap edge",
+      "axis": "off-axis",
+      "distance_mm": 50,
+      "distance_input": "2 in",
+      "input_channel": 1,
+      "gate_peak_dbfs": -8.0,
+      "gate_snr": 15.0,
+      "snr_db": 42.0,
+      "latency_samples": 130,
+      "delay_samples": 0,
+      "slot": 0
+    }
+  ],
+  "mic": {
+    "model": "MD421",
+    "location": "grille",
+    "position": "cap edge",
+    "axis": "off-axis",
+    "distance_mm": 50,
+    "distance_input": "2 in",
+    "input_channel": 1,
+    "gate_peak_dbfs": -8.0,
+    "gate_snr": 15.0,
+    "snr_db": 42.0,
+    "latency_samples": 130,
+    "delay_samples": 0,
+    "slot": 0
+  },
+  "measured": {
+    "gate_peak_dbfs": -8.0,
+    "gate_snr": 15.0,
+    "snr_db": 42.0,
+    "clip_run": 0,
+    "latency_samples": 130,
+    "ir_len": 24000
+  },
+  "sweep": { "f1": 80.0, "f2": 8000.0, "dur": 0.5, "tail": 0.1 },
+  "mix": [
+    { "gain_db": -1.5, "filter_on": true }
+  ],
+  "blend_hpf_on": true,
+  "blend_hpf_hz": 100.0,
+  "blend_hpf_slope": 24,
+  "blend_lpf_on": true,
+  "blend_lpf_hz": 5000.0,
+  "blend_lpf_slope": 12
+}

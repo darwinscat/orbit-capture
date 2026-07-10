@@ -1,0 +1,61 @@
+name: build
+
+# CI gates — the headless test tiers (the whole point of the de-monolith: the capture / blend /
+# export / session logic tests without a widget tree). Binaries are release.yml's job, on a tag.
+#
+# Needs the sibling felitronics-core checkout (public repo) — checked out next to this one and
+# passed in via -DOC_CORE_SRC, exactly like a local build.
+
+on:
+  push:
+    branches: [ main ]
+    paths: [ 'app/**', 'dsp/**', '.github/workflows/build.yml' ]
+  pull_request:
+    paths: [ 'app/**', 'dsp/**', '.github/workflows/build.yml' ]
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: darwinscat/felitronics-core
+          path: felitronics-core
+
+      - name: Cache JUCE (FetchContent)
+        uses: actions/cache@v4
+        with:
+          path: tests-build/_deps
+          key: juce-tests-${{ hashFiles('app/tests/CMakeLists.txt') }}
+
+      # juce_core-tier console tests still compile JUCE sources — the standard dev packages.
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build \
+            libasound2-dev libfreetype-dev libfontconfig1-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev \
+            libglu1-mesa-dev mesa-common-dev
+
+      - name: "dsp shim tests (oc:: over felitronics-core)"
+        run: |
+          cmake -B dsp-build -S dsp -G Ninja -DOC_CORE_SRC="$GITHUB_WORKSPACE/felitronics-core"
+          cmake --build dsp-build
+          ctest --test-dir dsp-build --output-on-failure
+
+      - name: App headless gates (core/model/persist/audio tiers)
+        run: |
+          cmake -B tests-build -S app/tests -G Ninja -DOC_CORE_SRC="$GITHUB_WORKSPACE/felitronics-core"
+          cmake --build tests-build
+          ctest --test-dir tests-build --output-on-failure

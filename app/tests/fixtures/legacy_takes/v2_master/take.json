@@ -1,0 +1,83 @@
+{
+  "app": "OrbitCapture 0.2",
+  "timestamp": "20260301-101500",
+  "sample_rate": 48000.0,
+  "input_channel": 1,
+  "interface": "Focusrite Scarlett 2i2",
+  "cabinet": {
+    "instrument": "guitar",
+    "enclosure": "closed",
+    "model": "1x12 pine",
+    "speaker": "Celestion V30",
+    "speaker_count": 1,
+    "speaker_size_in": "12",
+    "config": "1x12",
+    "tweeter": false,
+    "back": "closed"
+  },
+  "amp": { "model": "5150", "type": "tube" },
+  "room": "live room",
+  "mics": [
+    {
+      "model": "SM57",
+      "location": "cone",
+      "position": "cone",
+      "axis": "on-axis",
+      "distance_mm": 25,
+      "distance_input": "1 in",
+      "input_channel": 1,
+      "gate_peak_dbfs": -5.0,
+      "gate_snr": 20.0,
+      "snr_db": 48.0,
+      "latency_samples": 132,
+      "delay_samples": 0,
+      "slot": 0
+    },
+    {
+      "model": "R121",
+      "location": "off-axis",
+      "position": "off-axis",
+      "axis": "off-axis",
+      "distance_mm": 300,
+      "distance_input": "12 in",
+      "input_channel": 2,
+      "gate_peak_dbfs": -10.0,
+      "gate_snr": 18.0,
+      "snr_db": 40.0,
+      "latency_samples": 132,
+      "delay_samples": 3,
+      "slot": 1
+    }
+  ],
+  "mic": {
+    "model": "SM57",
+    "location": "cone",
+    "position": "cone",
+    "axis": "on-axis",
+    "distance_mm": 25,
+    "distance_input": "1 in",
+    "input_channel": 1,
+    "gate_peak_dbfs": -5.0,
+    "gate_snr": 20.0,
+    "snr_db": 48.0,
+    "latency_samples": 132,
+    "delay_samples": 0,
+    "slot": 0
+  },
+  "measured": {
+    "gate_peak_dbfs": -5.0,
+    "gate_snr": 20.0,
+    "snr_db": 48.0,
+    "clip_run": 0,
+    "latency_samples": 132,
+    "ir_len": 24000
+  },
+  "sweep": { "f1": 80.0, "f2": 8000.0, "dur": 0.5, "tail": 0.1 },
+  "mix": [
+    { "gain_db": 0.0, "phase_deg": 0.0, "shift_ms": 0.0, "solo": false, "mute": false,
+      "hpf_on": false, "hpf_hz": 80.0, "hpf_slope": 24, "lpf_on": false, "lpf_hz": 8000.0, "lpf_slope": 12 },
+    { "gain_db": -2.0, "phase_deg": 180.0, "shift_ms": 0.3, "solo": false, "mute": false,
+      "hpf_on": true, "hpf_hz": 120.0, "hpf_slope": 24, "lpf_on": true, "lpf_hz": 6000.0, "lpf_slope": 12 }
+  ],
+  "master": { "gain_db": -1.0, "hpf_on": true, "hpf_hz": 90.0, "hpf_slope": 24, "lpf_on": true, "lpf_hz": 9000.0, "lpf_slope": 12 }
+}

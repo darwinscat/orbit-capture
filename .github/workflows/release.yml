@@ -1,0 +1,235 @@
+name: release
+
+# Build the OrbitCapture app binaries on a version tag (vX.Y.Z) and attach them to a GitHub
+# Release. A manual run (workflow_dispatch) builds the SAME artifacts but does NOT create a
+# release unless dry_run=false — download + test from the run page without publishing.
+#
+#   • macOS   → universal (arm64 + x86_64) .app, signed (Developer ID) + notarized + stapled,
+#               in a .zip — built on the self-hosted mac runner whose Keychain holds the
+#               signing key. Needs repo secrets MACOS_APP_IDENTITY + KCH_PWD and repo var
+#               NOTARY_PROFILE; without them it falls back to an unsigned zip with a warning.
+#   • Windows → native x64 + arm64 .zip (windows-11-arm is a free hosted runner for public repos)
+#   • Linux   → native x86_64 + arm64 .tar.gz (both free hosted runners — no cross/QEMU)
+#
+# Every job checks out the sibling felitronics-core (public) and passes -DOC_CORE_SRC, exactly
+# like a local build. The headless test gates must pass before anything is published.
+
+on:
+  push:
+    tags: [ 'v*' ]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version, e.g. 0.1.0 (manual runs)"
+        required: true
+        default: "0.1.0"
+      dry_run:
+        description: "Build only — do NOT create a GitHub Release"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write   # create the GitHub Release + upload assets
+
+jobs:
+  tests:
+    # The release gate: the same headless tiers build.yml runs.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: darwinscat/felitronics-core
+          path: felitronics-core
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build \
+            libasound2-dev libfreetype-dev libfontconfig1-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev \
+            libglu1-mesa-dev mesa-common-dev
+      - name: Headless gates
+        run: |
+          cmake -B dsp-build -S dsp -G Ninja -DOC_CORE_SRC="$GITHUB_WORKSPACE/felitronics-core"
+          cmake --build dsp-build && ctest --test-dir dsp-build --output-on-failure
+          cmake -B tests-build -S app/tests -G Ninja -DOC_CORE_SRC="$GITHUB_WORKSPACE/felitronics-core"
+          cmake --build tests-build && ctest --test-dir tests-build --output-on-failure
+
+  macos:
+    # Self-hosted macOS (arm64) runner — the Intel slice cross-compiles fine (we build +
+    # package, not run it). CMAKE_OSX_DEPLOYMENT_TARGET=11.0 is set by app/CMakeLists.txt
+    # so the .app runs on macOS 11+. The Developer ID key + notarytool profile live in the
+    # runner's Keychain (shared with orbitcab's releases).
+    runs-on: [self-hosted, macOS]
+    timeout-minutes: 120         # notarization can be slow
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: darwinscat/felitronics-core
+          path: felitronics-core
+      - name: Version
+        id: v
+        run: |
+          RAW="${{ github.event.inputs.version || github.ref_name }}"
+          echo "version=${RAW#v}" >> "$GITHUB_OUTPUT"
+      - name: Build (universal arm64 + x86_64)
+        run: |
+          cmake -B build -S app -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
+                -DOC_CORE_SRC="$GITHUB_WORKSPACE/felitronics-core"
+          cmake --build build --parallel
+      - name: Sign, notarize, package (.zip)
+        env:
+          APP_ID:  ${{ secrets.MACOS_APP_IDENTITY }}
+          NOTARY:  ${{ vars.NOTARY_PROFILE }}
+          KCH_PWD: ${{ secrets.KCH_PWD }}
+        run: |
+          set -euo pipefail
+          VER="${{ steps.v.outputs.version }}"
+          APP="build/OrbitCaptureApp_artefacts/Release/OrbitCapture.app"
+          lipo -archs "$APP/Contents/MacOS/OrbitCapture"        # sanity: both slices present
+          mkdir -p dist
+          if [ -n "${APP_ID:-}" ]; then
+            # Let codesign use the signing key without a GUI prompt — required when the runner
+            # has no interactive login session (service mode / SSH). Idempotent per run.
+            KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
+            security unlock-keychain -p "$KCH_PWD" "$KEYCHAIN"
+            security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KCH_PWD" "$KEYCHAIN" >/dev/null
+            # Standalone app = its own process → hardened runtime + the audio-input entitlement
+            # (it records the cabinet mics), then notarize + staple so it launches clean from the zip.
+            codesign --force --options runtime --timestamp \
+                     --entitlements app/packaging/standalone.entitlements --sign "$APP_ID" "$APP"
+            codesign --verify --strict --verbose=1 "$APP"
+            ditto -c -k --keepParent "$APP" dist/_notarize.zip
+            xcrun notarytool submit dist/_notarize.zip --keychain-profile "$NOTARY" --wait
+            xcrun stapler staple "$APP"
+            rm -f dist/_notarize.zip
+            spctl -a -vv "$APP" || true
+          else
+            echo "::warning::MACOS_APP_IDENTITY not set - shipping an UNSIGNED build (right-click -> Open)"
+          fi
+          ditto -c -k --keepParent "$APP" "dist/OrbitCapture-$VER-macOS-universal.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/*
+
+  windows:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: windows-latest, arch: x64,   plat: x64   }
+          - { runner: windows-11-arm, arch: arm64, plat: ARM64 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: darwinscat/felitronics-core
+          path: felitronics-core
+      - name: Version
+        id: v
+        shell: bash
+        run: |
+          RAW="${{ github.event.inputs.version || github.ref_name }}"
+          echo "version=${RAW#v}" >> "$GITHUB_OUTPUT"
+      - name: Cache JUCE (FetchContent)
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: juce-windows-${{ matrix.arch }}-${{ hashFiles('app/CMakeLists.txt') }}
+      - name: Build
+        run: |
+          cmake -B build -S app -A ${{ matrix.plat }} -DOC_CORE_SRC="${{ github.workspace }}/felitronics-core"
+          cmake --build build --config Release --parallel
+      - name: Package (.zip)
+        shell: pwsh
+        run: |
+          $ver = "${{ steps.v.outputs.version }}"
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Compress-Archive -Force -DestinationPath "dist\OrbitCapture-$ver-Windows-${{ matrix.arch }}.zip" `
+              -Path "build\OrbitCaptureApp_artefacts\Release\OrbitCapture.exe"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ matrix.arch }}
+          path: dist/*
+
+  linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-latest,    arch: x86_64 }
+          - { runner: ubuntu-24.04-arm, arch: arm64  }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: darwinscat/felitronics-core
+          path: felitronics-core
+      - name: Version
+        id: v
+        run: |
+          RAW="${{ github.event.inputs.version || github.ref_name }}"
+          echo "version=${RAW#v}" >> "$GITHUB_OUTPUT"
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build \
+            libasound2-dev libfreetype-dev libfontconfig1-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev \
+            libglu1-mesa-dev mesa-common-dev
+      - name: Cache JUCE (FetchContent)
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: juce-linux-${{ matrix.arch }}-${{ hashFiles('app/CMakeLists.txt') }}
+      - name: Build
+        run: |
+          cmake -B build -S app -G Ninja -DCMAKE_BUILD_TYPE=Release \
+                -DOC_CORE_SRC="$GITHUB_WORKSPACE/felitronics-core"
+          cmake --build build
+      - name: Package (.tar.gz)
+        run: |
+          VER="${{ steps.v.outputs.version }}"
+          mkdir -p dist
+          tar -C build/OrbitCaptureApp_artefacts/Release -czf \
+              "dist/OrbitCapture-$VER-Linux-${{ matrix.arch }}.tar.gz" OrbitCapture
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+          path: dist/*
+
+  release:
+    needs: [ tests, macos, windows, linux ]
+    # Tag push → publish. Manual run → only if dry_run=false (default true = build-only).
+    if: ${{ github.event_name == 'push' || github.event.inputs.dry_run == 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RAW="${{ github.event.inputs.version || github.ref_name }}"
+          VER="${RAW#v}"
+          # Flatten every artifact into one dir, add a SHA256SUMS over them, upload all.
+          mkdir -p out
+          find artifacts -type f -exec cp {} out/ \;
+          ( cd out && sha256sum OrbitCapture-* > SHA256SUMS )
+          gh release create "v$VER" \
+            --repo "${{ github.repository }}" \
+            --title "OrbitCapture v$VER" \
+            --generate-notes \
+            out/*

@@ -1,0 +1,33 @@
+{
+  "app": "OrbitCapture 0.1",
+  "timestamp": "20250101-120000",
+  "sample_rate": 48000.0,
+  "input_channel": 1,
+  "mic": {
+    "model": "SM57",
+    "location": "cone",
+    "position": "cone",
+    "axis": "on-axis",
+    "distance_mm": 25,
+    "distance_input": "1 in",
+    "input_channel": 1,
+    "gate_peak_dbfs": -6.0,
+    "gate_snr": 12.5,
+    "snr_db": 45.0,
+    "latency_samples": 128,
+    "delay_samples": 0,
+    "slot": 0
+  },
+  "measured": {
+    "gate_peak_dbfs": -6.0,
+    "gate_snr": 12.5,
+    "snr_db": 45.0,
+    "clip_run": 0,
+    "latency_samples": 128,
+    "ir_len": 24000
+  },
+  "sweep": { "f1": 80.0, "f2": 8000.0, "dur": 0.5, "tail": 0.1 },
+  "mix": [
+    { "gain_db": 0.0, "invert": true, "fx_on": true }
+  ]
+}

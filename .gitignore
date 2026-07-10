@@ -1,0 +1,40 @@
+# build artifacts
+/build*/
+*.o
+*.a
+*.dylib
+*.so
+
+# OS
+.DS_Store
+
+# derived indexes (regenerable from YAML source — never commit)
+/manifest.sqlite
+/manifest.json
+
+# Raw per-take capture wavs = SOURCE but large (96k). Archival strategy
+# (git-lfs vs external) UNDECIDED — see README/RESEARCH. Kept out of plain git
+# for now to avoid bloat; the take_NNN.yaml sidecars ARE tracked.
+# (Reference sweeps in sweeps/ stay tracked — small, needed for reproducible deconv.)
+captures/**/*.wav
+experiments/**/*.wav
+app/*.log
+sweep.wav
+untitled folder/
+
+# internal / machine-agent notes + planning — NEVER public (AGPL release)
+/.private/
+CLAUDE.md
+AGENTS.md
+.claude/
+.cursor/
+.aider*
+.windsurf*
+GEMINI.md
+
+# IDE
+.idea/
+.vscode/
+
+# source art (grids the mic PNGs were sliced from — the sliced assets ARE tracked)
+IMG/
