@@ -172,7 +172,9 @@ public:
                     if (rd == nullptr || rd->lengthInSamples <= 0 || rd->sampleRate <= 0) {
                         reviewTab.reviewInfo.setText("Could not read " + f.getFileName(), juce::dontSendNotification); return;
                     }
-                    const int n = (int)juce::jmin<juce::int64>(rd->lengthInSamples, (juce::int64)(rd->sampleRate * 60.0));
+                    // std::min, NOT juce::jmin: an explicit jmin<int64> makes GCC instantiate the
+                    // juce::dsp SIMDRegister<long long> overload candidate, which doesn't exist on Linux.
+                    const int n = (int)std::min<juce::int64>(rd->lengthInSamples, (juce::int64)(rd->sampleRate * 60.0));
                     juce::AudioBuffer<float> b((int)rd->numChannels, n);
                     rd->read(&b, 0, n, 0, true, true);
                     DiClip c; c.name = f.getFileNameWithoutExtension(); c.sr = rd->sampleRate;
