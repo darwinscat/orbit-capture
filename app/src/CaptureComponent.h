@@ -1736,8 +1736,18 @@ private:
                     if (!haveRef) { refOnset = ocap::irimport::onsetIndex(ir); haveRef = true; }   // 1st channel IS the reference
                     else ocap::irimport::alignOnsetTo(ir, refOnset);   // others join its time base
                     ocap::MicMeta mm;
-                    mm.model = f.getFileNameWithoutExtension().toStdString();
-                    mm.location = "import";
+                    // Detect a known mic in the file name ("...TRAD 906-1" -> Sennheiser e906);
+                    // fall back to the file name itself. Imports get the sane physical defaults
+                    // (On-axis, grille, Cap Edge, 0 cm) — all editable on the strip afterwards.
+                    { std::vector<std::string> catalog;
+                      for (const auto& s : listStore.get("mic")) catalog.push_back(s.toStdString());
+                      const auto guess = ocap::micset::guessModel(f.getFileNameWithoutExtension().toStdString(), catalog);
+                      mm.model = guess.empty() ? f.getFileNameWithoutExtension().toStdString() : guess; }
+                    mm.axis = "On-axis";
+                    mm.location = "grille";
+                    mm.position = "Cap Edge";
+                    mm.distanceMm = 0;
+                    mm.distanceInput = "0 cm";
                     mm.inputChannel = (int)meta.mics.size() + 1;
                     { std::vector<ocap::micset::MicRowSpec> specs;     // first free colour slot
                       for (const auto& x : meta.mics) specs.push_back({ x.location, x.position, 0.0, x.inputChannel - 1, x.slot });

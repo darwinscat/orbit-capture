@@ -104,5 +104,19 @@ int main()
         ok (! placeGrille (packed).has_value(), "grid exhausted → nullopt (caller keeps the row put)");
     }
 
+    group ("guessModel: known mics detected in imported file names");
+    {
+        const std::vector<std::string> cat { "Shure SM57", "Sennheiser e906", "Sennheiser e609",
+                                             "AKG C414", "Royer R-121", "Beyerdynamic M160" };
+        ok (guessModel ("YA MES 412 TRAD 906-1", cat) == "Sennheiser e906", "bare digits pick e906 (906-1)");
+        ok (guessModel ("cab_SM57_capedge", cat) == "Shure SM57", "exact token, punctuation-blind");
+        ok (guessModel ("Mesa e609 close", cat) == "Sennheiser e609", "e609 vs e906 stay distinct");
+        ok (guessModel ("R-121 ribbon 2", cat) == "Royer R-121", "hyphenated fingerprint matches");
+        ok (guessModel ("take 57", cat).empty(), "2-digit bare number is too ambiguous");
+        ok (guessModel ("cab 4140 bright", cat).empty(), "'4140' is not '414' (whole-token only)");
+        ok (guessModel ("sm57 or m160", cat).empty(), "two exact hits -> no guess (never a wrong pick)");
+        ok (guessModel ("room mic", cat).empty(), "nothing recognizable -> empty");
+    }
+
     return felitronics::test::report();
 }
