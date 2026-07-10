@@ -10,8 +10,9 @@ on:
   push:
     branches: [ main ]
     paths: [ 'app/**', 'dsp/**', '.github/workflows/build.yml' ]
+  # No paths filter on PRs: `tests` is a REQUIRED check on the protected main branch, so it
+  # must materialize on every PR — a filtered-out check would block merging forever.
   pull_request:
-    paths: [ 'app/**', 'dsp/**', '.github/workflows/build.yml' ]
   workflow_dispatch:
 
 concurrency:
