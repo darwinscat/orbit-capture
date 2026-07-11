@@ -70,6 +70,17 @@ static const juce::Colour kSlotColours[8] = {
     juce::Colour(0xffff8a3d), juce::Colour(0xff4fc3f7), juce::Colour(0xfff06292), juce::Colour(0xff81c784),
     juce::Colour(0xffb9a6ff), juce::Colour(0xffffd54f), juce::Colour(0xffe57373), juce::Colour(0xff4db6ac) };
 
+// A gear (⚙) button that draws the glyph LARGE — sized to the button, so it reads clearly in a
+// toolbar (a plain TextButton renders the glyph tiny relative to its box).
+struct GearButton : juce::Button {
+    GearButton() : juce::Button("gear") {}
+    void paintButton(juce::Graphics& g, bool over, bool down) override {
+        g.setColour(juce::Colours::white.withAlpha(down ? 0.6f : over ? 0.95f : 0.7f));
+        g.setFont(juce::FontOptions((float)juce::jmin(getWidth(), getHeight()) * 1.25f));
+        g.drawText(juce::String::fromUTF8("\xe2\x9a\x99"), getLocalBounds(), juce::Justification::centred);
+    }
+};
+
 // One-line text prompt (OK/Enter · Cancel/Esc). Shared by the new-session prompt, the gear-list
 // managers and the add-mic-model flow.
 inline void textPrompt(const juce::String& title, const juce::String& initial, std::function<void(juce::String)> onOk) {

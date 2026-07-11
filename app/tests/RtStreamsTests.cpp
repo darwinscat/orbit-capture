@@ -54,5 +54,23 @@ int main()
         ok (c.mode.load() == 0, "stop = mode 0");
     }
 
+    group ("RecStream: the live-input recorder");
+    {
+        ocap::RecStream r;
+        r.reserve (6);
+        const float* base = r.buf.data();
+        r.start();
+        ok (r.recording.load() && r.len.load() == 0, "start arms and rewinds");
+        for (float v : { 1.f, 2.f, 3.f }) r.push (v);
+        ok (r.len.load() == 3 && r.buf[0] == 1.f && r.buf[2] == 3.f, "pushes append in order");
+        for (float v : { 4.f, 5.f, 6.f, 7.f, 8.f }) r.push (v);
+        ok (r.len.load() == 6 && r.full(), "capacity caps the recording (no overrun)");
+        ok (r.buf.data() == base, "recording never reallocates — the RT pointer stays valid");
+        r.stop();
+        ok (! r.recording.load() && r.len.load() == 6, "stop keeps the recorded length");
+        r.start();
+        ok (r.len.load() == 0, "restart rewinds");
+    }
+
     return felitronics::test::report();
 }

@@ -39,6 +39,7 @@ struct MeasuredMeta {
 // "interface_" avoids colliding with the C++ keyword; the JSON key is still "interface".
 struct TakeMeta {
     std::string app, timestamp, interface_;
+    std::string name;                     // optional user-given take name (empty = synthetic label)
     double      sampleRate = 0.0;
     int         inputChannel = 0;
     // cabinet + amp + room snapshot at capture time (kept as strings, mirroring the UI combo-box text —

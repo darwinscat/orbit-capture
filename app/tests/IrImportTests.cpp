@@ -54,6 +54,23 @@ int main()
         ok (!fine.truncatedCount && !fine.truncatedLength, "in-range set unflagged");
     }
 
+    group ("onset alignment (appended channels must share the take's time reference)");
+    {
+        std::vector<double> late (400, 0.0); late[200] = 1.0; late[201] = 0.4;
+        ok (onsetIndex (late) == 200, "onset = first sample over 10% of peak");
+        alignOnsetTo (late, 50);
+        ok (late[50] == 1.0 && late[51] == 0.4, "late onset pulled forward to the reference");
+        ok (late.size() == 400 && late[200] == 0.0, "length preserved, old position cleared");
+
+        std::vector<double> early (400, 0.0); early[10] = -0.8;
+        alignOnsetTo (early, 60);
+        ok (early[60] == -0.8 && early[10] == 0.0, "early onset pushed back (front-padded)");
+
+        std::vector<double> flat (100, 0.0);
+        alignOnsetTo (flat, 30);                                       // silence: nothing to align, no crash
+        ok (flat.size() == 100, "silent buffer survives");
+    }
+
     group ("degenerate inputs");
     {
         ok (normalize ({}, 8).irs.empty(), "no files -> empty set");

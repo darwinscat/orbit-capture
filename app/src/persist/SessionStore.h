@@ -119,6 +119,76 @@ public:
         return lt;
     }
 
+    // The mixer is the take's channel EDITOR: channels can be appended (imported IRs) and removed.
+    // Both keep the on-disk contract loadTake expects — N == 1 uses the un-suffixed ir.wav/raw.wav
+    // names, N > 1 uses _micN — so files are renamed across the 1 <-> many boundary and renumbered
+    // on removal. take.json is read-modify-written (additive keys survive); mic = mics[0] mirror
+    // kept in sync.
+
+    // Append one channel: writes ir_mic<N+1>.wav (no raw — imports have none) + extends mics[]/mix[].
+    // Returns false when the take.json is unreadable.
+    bool appendChannel (const juce::File& takeDir, const MicMeta& mic,
+                        const std::vector<double>& ir, double sr) const {
+        const auto f = takeDir.getChildFile ("take.json");
+        auto v = juce::JSON::parse (f.loadFileAsString());
+        auto* o = v.getDynamicObject();
+        if (! o) return false;
+        auto* mics = v.getProperty ("mics", juce::var()).getArray();
+        if (! mics) {                                                  // a named EMPTY take gains its first channel
+            o->setProperty ("mics", juce::Array<juce::var>());
+            mics = v.getProperty ("mics", juce::var()).getArray();
+        }
+        const int n = mics->size();
+        if ((double) v.getProperty ("sample_rate", 0.0) <= 0.0)
+            o->setProperty ("sample_rate", sr);                        // the first channel sets the take's rate
+        if (n == 1) {                                                  // 1 -> 2: the un-suffixed files gain _mic1
+            takeDir.getChildFile ("ir.wav").moveFileTo (takeDir.getChildFile ("ir_mic1.wav"));
+            takeDir.getChildFile ("raw.wav").moveFileTo (takeDir.getChildFile ("raw_mic1.wav"));
+        }
+        oc::wav_write_mono_f32 (takeDir.getChildFile (n == 0 ? juce::String ("ir.wav")
+                                                              : "ir_mic" + juce::String (n + 1) + ".wav")
+                                    .getFullPathName().toStdString(), ir, sr);
+        mics->add (micToVar (mic));
+        if (auto* mix = v.getProperty ("mix", juce::var()).getArray()) {
+            auto* mo = new juce::DynamicObject();
+            stripToVar (mo, StripParams {});
+            mix->add (juce::var (mo));
+        }
+        o->setProperty ("mic", (*mics)[0]);                            // keep the v1 mirror in sync
+        f.replaceWithText (juce::JSON::toString (v));
+        return true;
+    }
+
+    // Remove channel `idx`: deletes its ir/raw files, renumbers the rest, drops mics[idx]/mix[idx].
+    // Refuses to remove the last channel (delete the take instead). Returns false when refused.
+    bool removeChannel (const juce::File& takeDir, int idx) const {
+        const auto f = takeDir.getChildFile ("take.json");
+        auto v = juce::JSON::parse (f.loadFileAsString());
+        auto* o = v.getDynamicObject();
+        if (! o) return false;
+        auto* mics = v.getProperty ("mics", juce::var()).getArray();
+        if (! mics || mics->size() < 2 || idx < 0 || idx >= mics->size()) return false;
+        const int n = mics->size();
+        auto nameOf = [] (const char* base, int i, int total) {        // the on-disk naming rule
+            return juce::String (base) + (total == 1 ? juce::String() : "_mic" + juce::String (i + 1)) + ".wav";
+        };
+        for (const char* base : { "ir", "raw" }) {
+            takeDir.getChildFile (nameOf (base, idx, n)).deleteFile();
+            for (int i = idx + 1; i < n; ++i)                          // shift the tail down one slot
+                takeDir.getChildFile (nameOf (base, i, n))
+                       .moveFileTo (takeDir.getChildFile (nameOf (base, i - 1, n)));
+            if (n - 1 == 1)                                            // 2 -> 1: back to the un-suffixed names
+                takeDir.getChildFile (juce::String (base) + "_mic1.wav")
+                       .moveFileTo (takeDir.getChildFile (juce::String (base) + ".wav"));
+        }
+        mics->remove (idx);
+        if (auto* mix = v.getProperty ("mix", juce::var()).getArray())
+            if (idx < mix->size()) mix->remove (idx);
+        o->setProperty ("mic", (*mics)[0]);                            // keep the v1 mirror in sync
+        f.replaceWithText (juce::JSON::toString (v));
+        return true;
+    }
+
     // READ-MODIFY-WRITE: parse the existing take.json, set only mix/master/mono_filter, rewrite — so
     // additive/unknown keys (future schema fields) survive untouched (mirrors saveMixToTake exactly;
     // never a full TakeMeta->var rewrite, which would silently drop anything this code doesn't model yet).
