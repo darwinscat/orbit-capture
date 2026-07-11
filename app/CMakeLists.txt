@@ -56,6 +56,11 @@ if(NOT OC_VERSION)
 endif()
 message(STATUS "OrbitCapture update-check version stamp: ${OC_VERSION}")
 
+# Library versions for the header's update/about window — read from the subprojects' own
+# project() scopes, so they can never drift from what was actually built.
+get_directory_property(OC_CORE_VERSION   DIRECTORY "${felitronics_core_SOURCE_DIR}"   DEFINITION PROJECT_VERSION)
+get_directory_property(OC_APPKIT_VERSION DIRECTORY "${felitronics_appkit_SOURCE_DIR}" DEFINITION PROJECT_VERSION)
+
 juce_add_gui_app(OrbitCaptureApp
     PRODUCT_NAME "OrbitCapture"
     COMPANY_NAME "Darwin's Cat"
@@ -76,7 +81,9 @@ target_compile_definitions(OrbitCaptureApp PRIVATE
     JUCE_USE_CURL=0
     JUCE_APPLICATION_NAME_STRING="OrbitCapture"
     JUCE_APPLICATION_VERSION_STRING="0.1.0"
-    OC_VERSION_STRING="${OC_VERSION}")
+    OC_VERSION_STRING="${OC_VERSION}"
+    OC_CORE_VERSION_STRING="${OC_CORE_VERSION}"
+    OC_APPKIT_VERSION_STRING="${OC_APPKIT_VERSION}")
 target_include_directories(OrbitCaptureApp PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../dsp/include" "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(OrbitCaptureApp PRIVATE
     OrbitCaptureAssets

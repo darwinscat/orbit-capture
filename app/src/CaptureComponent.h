@@ -309,33 +309,12 @@ public:
         audioTab.navToCapture.setButtonText(juce::String::fromUTF8("Capture  \xe2\x86\x92"));
         audioTab.navToCapture.setColour(juce::TextButton::buttonColourId, navCol);
         audioTab.navToCapture.onClick = [this] { tabs.setCurrentTabIndex(1); };
-        // opt-in update check: version readout top-right in the header, button on the Audio tab
-        // (the network is touched ONLY by that button)
+        // opt-in update check: the header's version readout is the entry point — click opens the
+        // version/update window; the orange dot marks a stored newer release. The network is
+        // touched ONLY by that window's "Check for updates" button.
         header.version = updates.currentVersion();
-        refreshUpdateButton();
-        audioTab.updateBtn.onClick = [this] {
-            audioTab.updateBtn.setEnabled(false);
-            updates.checkNow([this](ocap::UpdateCheck::Result r) {
-                audioTab.updateBtn.setEnabled(true);
-                refreshUpdateButton();
-                if (!r.ok)
-                    juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon,
-                        "Check for updates", juce::String::fromUTF8("Could not reach GitHub \xe2\x80\x94 try again later."));
-                else if (!r.outdated)
-                    juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon,
-                        "Check for updates", "You are up to date (" + updates.currentVersion() + ").");
-                else {
-                    const juce::String url = r.url;
-                    juce::AlertWindow::showOkCancelBox(juce::MessageBoxIconType::InfoIcon,
-                        "Update available",
-                        "OrbitCapture " + r.latest + " is out (you run " + updates.currentVersion() + ").",
-                        "Open release page", "Later", nullptr,
-                        juce::ModalCallbackFunction::create([url](int ok) {
-                            if (ok == 1) juce::URL(url).launchInDefaultBrowser();
-                        }));
-                }
-            });
-        };
+        header.onVersionClick = [this] { showUpdateDialog(); };
+        refreshUpdateBadge();
         takeTab.navToReview.setButtonText(juce::String::fromUTF8("Mixer  \xe2\x86\x92"));
         takeTab.navToReview.setColour(juce::TextButton::buttonColourId, navCol);
         takeTab.navToReview.setEnabled(false);                                  // lights up after a capture
@@ -2025,15 +2004,89 @@ private:
     bool analyzerOn = true;                           // live-analyser overlay (the graph's gear menu)
     bool legendOn = true;                             // channel legend on the graph (gear menu toggle)
 
-    // The update button doubles as the badge: a stored newer release re-labels it until the user
-    // catches up (the appkit checker clears the store on version catch-up in its ctor).
-    void refreshUpdateButton() {
-        const bool avail = updates.updateAvailable();
-        audioTab.updateBtn.setButtonText(avail
-            ? juce::String::fromUTF8("update available \xe2\x86\x92 v") + updates.storedLatest()
-            : juce::String("check for updates"));
-        if (avail) audioTab.updateBtn.setColour(juce::TextButton::buttonColourId, brand::violet.darker(0.25f));
-        else       audioTab.updateBtn.removeColour(juce::TextButton::buttonColourId);
+    // The header's orange dot: lit while a stored newer release exists (the appkit checker clears
+    // the store on version catch-up in its ctor, so the dot dies on its own after an update).
+    void refreshUpdateBadge() {
+        header.updateDot = updates.updateAvailable();
+        header.repaint();
+    }
+
+    // The version/update window: what exactly this build is made of + the one place that checks.
+    void showUpdateDialog() {
+        struct Panel : juce::Component {
+            CaptureComponent& owner;
+            juce::TextEditor info;
+            juce::Label status;
+            juce::TextButton checkBtn { "Check for updates" }, openBtn, closeBtn { "Close" };
+            juce::String url;
+            explicit Panel(CaptureComponent& o) : owner(o) {
+                info.setMultiLine(true, false); info.setReadOnly(true); info.setCaretVisible(false);
+                info.setFont(juce::Font(juce::FontOptions(juce::Font::getDefaultMonospacedFontName(), 13.0f, 0)));
+                info.setColour(juce::TextEditor::backgroundColourId, juce::Colour(0xff2b2f36));
+                info.setColour(juce::TextEditor::textColourId, juce::Colours::white);
+                info.setColour(juce::TextEditor::outlineColourId, juce::Colours::grey.withAlpha(0.4f));
+                info.setText("OrbitCapture        " + owner.updates.currentVersion() + "\n"
+                             "felitronics-core    " OC_CORE_VERSION_STRING "\n"
+                             "felitronics-appkit  " OC_APPKIT_VERSION_STRING "\n"
+                             "JUCE                " + juce::String(JUCE_MAJOR_VERSION) + "."
+                                 + juce::String(JUCE_MINOR_VERSION) + "." + juce::String(JUCE_BUILDNUMBER),
+                             false);
+                status.setColour(juce::Label::textColourId, juce::Colours::white.withAlpha(0.75f));
+                openBtn.setColour(juce::TextButton::buttonColourId, brand::violet.darker(0.2f));
+                openBtn.setVisible(false);
+                if (owner.updates.updateAvailable())
+                    showUpdate(owner.updates.storedLatest(), owner.updates.releasesPageUrl());
+                checkBtn.onClick = [this] {
+                    checkBtn.setEnabled(false);
+                    status.setText(juce::String::fromUTF8("Checking\xe2\x80\xa6"), juce::dontSendNotification);
+                    juce::Component::SafePointer<Panel> safe(this);
+                    owner.updates.checkNow([safe](ocap::UpdateCheck::Result r) {
+                        if (safe == nullptr) return;                    // window closed mid-flight
+                        safe->checkBtn.setEnabled(true);
+                        safe->owner.refreshUpdateBadge();
+                        if (!r.ok)
+                            safe->status.setText(juce::String::fromUTF8("Could not reach GitHub \xe2\x80\x94 try again later."),
+                                                 juce::dontSendNotification);
+                        else if (!r.outdated) {
+                            safe->openBtn.setVisible(false);
+                            safe->status.setText("You are up to date.", juce::dontSendNotification);
+                        } else
+                            safe->showUpdate(r.latest, r.url);
+                    });
+                };
+                openBtn.onClick  = [this] { juce::URL(url).launchInDefaultBrowser(); };
+                closeBtn.onClick = [this] { if (auto* dw = findParentComponentOfClass<juce::DialogWindow>()) dw->exitModalState(0); };
+                for (juce::Component* c : { (juce::Component*)&info, (juce::Component*)&status,
+                                            (juce::Component*)&checkBtn, (juce::Component*)&openBtn,
+                                            (juce::Component*)&closeBtn })
+                    addAndMakeVisible(c);
+            }
+            void showUpdate(const juce::String& latest, const juce::String& u) {
+                url = u.isNotEmpty() ? u : owner.updates.releasesPageUrl();
+                status.setText("Update available: v" + latest, juce::dontSendNotification);
+                openBtn.setButtonText(juce::String::fromUTF8("Get v") + latest + juce::String::fromUTF8("  \xe2\x86\x92"));
+                openBtn.setVisible(true);
+            }
+            void resized() override {
+                auto r = getLocalBounds().reduced(14);
+                info.setBounds(r.removeFromTop(84)); r.removeFromTop(10);
+                status.setBounds(r.removeFromTop(24)); r.removeFromTop(8);
+                auto btns = r.removeFromBottom(30);
+                closeBtn.setBounds(btns.removeFromRight(84)); btns.removeFromRight(8);
+                openBtn.setBounds(btns.removeFromRight(130)); btns.removeFromRight(8);   // hidden until an update is known
+                checkBtn.setBounds(btns.removeFromLeft(150));
+            }
+        };
+        auto* panel = new Panel(*this);
+        panel->setSize(440, 210);
+        juce::DialogWindow::LaunchOptions opt;
+        opt.content.setOwned(panel);
+        opt.dialogTitle = "OrbitCapture";
+        opt.dialogBackgroundColour = juce::Colour(0xff23252b);
+        opt.escapeKeyTriggersCloseButton = true;
+        opt.useNativeTitleBar = false;
+        opt.resizable = false;
+        opt.launchAsync();
     }
 
     // OC_VERSION_STRING comes from the app target (release CI passes the tag; dev = git describe).

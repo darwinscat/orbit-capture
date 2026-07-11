@@ -14,21 +14,28 @@ struct BrandHeader : juce::Component {
         juce::Drawable::createFromImageData(BinaryData::catlogo_svg, (size_t)BinaryData::catlogo_svgSize) };
     juce::Typeface::Ptr michroma {
         juce::Typeface::createSystemTypefaceFor(BinaryData::MichromaRegular_ttf, (size_t)BinaryData::MichromaRegular_ttfSize) };
-    bool hover = false;
+    bool hover = false;                        // over the branded link run
+    bool versionHover = false;                 // over the version readout (its own click target)
     int clickRight = 1 << 30;                  // set from resized(): the end of the byline text
-    juce::String version;                      // dim right-aligned readout (the app sets it once)
+    juce::String version;                      // right-aligned readout; CLICK opens the update window
+    bool updateDot = false;                    // orange badge next to the version when a newer release is stored
+    std::function<void()> onVersionClick;      // wired by the orchestrator (the update/about window)
+    juce::Rectangle<float> versionArea;        // computed in paint() — the version's hit target
     bool linkArea(juce::Point<float> p) const { return p.x < (float)clickRight; }
     void updateHover(juce::Point<float> p) {
-        const bool h = linkArea(p);
-        setMouseCursor(h ? juce::MouseCursor::PointingHandCursor : juce::MouseCursor::NormalCursor);
-        if (h != hover) { hover = h; repaint(); }
+        const bool h = linkArea(p), vh = versionArea.contains(p);
+        setMouseCursor(h || vh ? juce::MouseCursor::PointingHandCursor : juce::MouseCursor::NormalCursor);
+        if (h != hover || vh != versionHover) { hover = h; versionHover = vh; repaint(); }
     }
     void mouseEnter(const juce::MouseEvent& e) override { updateHover(e.position); }
     void mouseMove (const juce::MouseEvent& e) override { updateHover(e.position); }
-    void mouseExit (const juce::MouseEvent&) override { hover = false; repaint(); }
+    void mouseExit (const juce::MouseEvent&) override { hover = false; versionHover = false; repaint(); }
     void mouseUp   (const juce::MouseEvent& e) override {
-        if (getLocalBounds().contains(e.getPosition()) && linkArea(e.position))
+        if (!getLocalBounds().contains(e.getPosition())) return;
+        if (linkArea(e.position))
             juce::URL("https://darwinscat.com/?utm_source=orbitcapture&utm_medium=app").launchInDefaultBrowser();
+        else if (versionArea.contains(e.position) && onVersionClick)
+            onVersionClick();
     }
     static float textWidth(const juce::Font& f, const juce::String& s) {
         juce::GlyphArrangement ga; ga.addLineOfText(f, s, 0.0f, 0.0f);
@@ -61,10 +68,20 @@ struct BrandHeader : juce::Component {
         g.setFont(bf);
         g.setColour(hover ? brand::violet.brighter(0.3f) : brand::violet);
         g.drawSingleLineText("by Darwin's Cat", juce::roundToInt(x), juce::roundToInt(baseline));
-        if (version.isNotEmpty()) {                                   // dim version, far right, same line
-            g.setFont(juce::Font(juce::FontOptions().withHeight(h * 0.24f)));
-            g.setColour(juce::Colours::white.withAlpha(0.35f));
-            g.drawText(version, getLocalBounds().reduced(12, 0), juce::Justification::centredRight, false);
+        if (version.isNotEmpty()) {                                   // version readout, far right, same line
+            const auto vf = juce::Font(juce::FontOptions().withHeight(h * 0.24f));
+            const float tw = textWidth(vf, version);
+            const float dotD = h * 0.15f, gap = updateDot ? dotD + 7.0f : 0.0f, right = (float)getWidth() - 12.0f;
+            const float left = right - tw - gap;
+            versionArea = { left - 8.0f, 0.0f, tw + gap + 20.0f, h };  // generous hit target
+            if (updateDot) {                                          // the "newer release exists" badge
+                g.setColour(brand::orange);
+                g.fillEllipse(left, cy - dotD * 0.5f, dotD, dotD);
+            }
+            g.setFont(vf);
+            g.setColour(juce::Colours::white.withAlpha(versionHover ? 0.8f : 0.35f));
+            g.drawText(version, juce::Rectangle<float>(left + gap, 0.0f, tw + 2.0f, h),
+                       juce::Justification::centredLeft, false);
         }
         g.setColour(juce::Colour(0x22ffffff)); g.fillRect(0, getHeight() - 1, getWidth(), 1);   // separator
     }
