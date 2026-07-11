@@ -1160,8 +1160,12 @@ private:
                          + (selected ? " (selected):" : " (loudest):");
         for (size_t m = 0; m < al.size(); ++m) {
             auto& s = *reviewTab.mixRows[m];
+            if (m == ref) { s.shift.setValue(0.0, juce::dontSendNotification); s.shift.updateText(); continue; }
+            if (al[m].corr <= 0.0) {                                   // core refused (offset out of range /
+                msg << "  " << s.name.getText() << " no match";        // nothing to correlate) — DON'T guess:
+                continue;                                              // the channel's knobs stay untouched
+            }
             s.shift.setValue(al[m].shiftMs, juce::dontSendNotification); s.shift.updateText();
-            if (m == ref) continue;                                    // the reference keeps its phase seasoning
             s.phase.setValue(al[m].invert ? 180.0 : 0.0, juce::dontSendNotification); s.phase.updateText();
             msg << "  " << s.name.getText() << " " << (al[m].shiftMs >= 0 ? "+" : "")
                 << juce::String(al[m].shiftMs, 2) << "ms" << (al[m].invert ? " inv" : "");
