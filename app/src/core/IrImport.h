@@ -12,6 +12,8 @@
 // downstream: same mixer, same audition, same export).
 #include "core/IrDeliverable.h"
 
+#include <felitronics/measurement/IrPost.h>
+
 #include <cmath>
 #include <cstddef>
 #include <string>
@@ -34,16 +36,16 @@ struct ImportSet {
     bool   truncatedLength = false;         // a source was longer than maxSeconds
 };
 
-// First sample exceeding 10% of the buffer's peak — the IR's onset (the capture pipeline uses
-// the same notion of "where the impulse starts" for its common time reference).
+// The IR's onset — core's detector (measurement::IrPost::detectOnset: find the peak, walk BACK to
+// the attack, back off a small pre-roll). Replaces a naive first-sample-over-10%-of-peak scan that
+// duplicated core and was fooled by pre-onset floors (core-reuse audit N2). The pre-roll means the
+// returned index sits a few samples BEFORE the audible attack — consistent across all callers, and
+// it cancels out wherever two onsets are compared (alignment).
 template <typename T>
 inline std::ptrdiff_t onsetIndex(const std::vector<T>& x) {
-    T pk = 0;
-    for (T v : x) pk = std::max(pk, (T)std::abs((double)v));
-    if (pk <= 0) return 0;
-    for (std::size_t i = 0; i < x.size(); ++i)
-        if (std::abs((double)x[i]) >= 0.1 * (double)pk) return (std::ptrdiff_t)i;
-    return 0;
+    if (x.empty()) return 0;
+    const std::vector<double> d(x.begin(), x.end());
+    return (std::ptrdiff_t)felitronics::measurement::detectOnset(d).onset;
 }
 
 // Shift `ir` (pad/trim at the front) so its onset lands on `refOnset` — an APPENDED channel must
