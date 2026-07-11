@@ -309,10 +309,9 @@ public:
         audioTab.navToCapture.setButtonText(juce::String::fromUTF8("Capture  \xe2\x86\x92"));
         audioTab.navToCapture.setColour(juce::TextButton::buttonColourId, navCol);
         audioTab.navToCapture.onClick = [this] { tabs.setCurrentTabIndex(1); };
-        // version + opt-in update check (Audio tab, bottom-left; the network is touched ONLY here)
-        audioTab.versionLbl.setText(juce::String("OrbitCapture  ") + updates.currentVersion(),
-                                    juce::dontSendNotification);
-        audioTab.versionLbl.setColour(juce::Label::textColourId, juce::Colours::white.withAlpha(0.35f));
+        // opt-in update check: version readout top-right in the header, button on the Audio tab
+        // (the network is touched ONLY by that button)
+        header.version = updates.currentVersion();
         refreshUpdateButton();
         audioTab.updateBtn.onClick = [this] {
             audioTab.updateBtn.setEnabled(false);
@@ -363,7 +362,7 @@ public:
     void resized() override {
         auto r = getLocalBounds();
         header.setBounds(r.removeFromTop(62));
-        header.clickRight = 1 << 30;                                       // whole header is the site link again
+        header.clickRight = (int)std::ceil(header.contentRight());        // link = the branded run only
         tabs.setBounds(r);
         // session management sits on the right of the tab-bar row
         const int rowH = tabs.getTabBarDepth();
