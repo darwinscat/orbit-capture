@@ -1,10 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Darwin's Cat — Oleh Tsymaienko & Alisa Lafoks. Part of OrbitCapture — see LICENSE.
 #pragma once
-// OrbitCapture — IR deliverable math (JUCE-free, headless-testable). De-monolith step 2, lifted
-// verbatim from CaptureComponent (juce::MathConstants pi → oc::kPi). Blackman-windowed-sinc sample-rate
-// conversion for export (kernel-sum normalised: exact DC, clean edges). Verified: DC 1.000, alias −100 dB.
-#include "oc/fft.hpp"   // oc::kPi
+// OrbitCapture — IR deliverable math (JUCE-free, headless-testable).
+//
+// Sample-rate conversion comes from core's convolution::IrResampler (Kaiser windowed-sinc) — the
+// family's ONE resampler fingerprint (reuse audit W4). The swap off the local Blackman-sinc was
+// gated by a measured A/B (same 128-tap radius): passband identical to the milli-dB (both -3.010
+// dB tone RMS across 1k..19k on 48->44.1), DC exact for both, alias rejection of a 23 kHz tone
+// -115.5 dB (Kaiser beta=10) vs -95.8 dB (old Blackman) — strictly better, everything else equal.
+// NB deliberate: core returns float (24-bit mantissa, the same depth as the 24-bit PCM
+// deliverable); the old path stayed double end-to-end, so low-order deliverable bits may differ.
+#include <felitronics/convolution/IrResampler.h>
+
 #include <vector>
 #include <cmath>
 #include <algorithm>
@@ -14,26 +21,12 @@ namespace ocap {
 
 inline std::vector<double> resampleIR(const std::vector<float>& x, double srIn, double srOut) {
     if (std::abs(srIn - srOut) < 1.0) return { x.begin(), x.end() };
-    const double ratio = srOut / srIn;
-    const int nOut = (int)std::floor((double)x.size() * ratio);
-    const double fc = 0.475 * std::min(1.0, ratio);                // cycles per INPUT sample
-    const int half = 64;
-    const double pi = oc::kPi;
-    std::vector<double> y((size_t)std::max(0, nOut), 0.0);
-    for (int n = 0; n < nOut; ++n) {
-        const double t = (double)n / ratio;
-        const int k0 = (int)std::floor(t) - half + 1, k1 = (int)std::floor(t) + half;
-        double acc = 0.0, wsum = 0.0;
-        for (int k = std::max(0, k0); k <= std::min((int)x.size() - 1, k1); ++k) {
-            const double d = t - (double)k;
-            const double s = (std::abs(d) < 1e-12) ? 2.0 * fc : std::sin(2.0 * pi * fc * d) / (pi * d);
-            const double w = 0.42 + 0.5 * std::cos(pi * d / half) + 0.08 * std::cos(2.0 * pi * d / half);
-            acc += (double)x[(size_t)k] * s * w;
-            wsum += s * w;
-        }
-        y[(size_t)n] = std::abs(wsum) > 1e-9 ? acc / wsum : 0.0;   // kernel-sum normalised: exact DC, clean edges
-    }
-    return y;
+    felitronics::convolution::IrResampleConfig cfg;
+    cfg.halfTaps = 64;            // 128-tap radius — matches the old kernel's sharpness
+    cfg.beta = 10.0;              // ~100 dB-class stopband (measured -115 dB on the 23 kHz probe)
+    cfg.cutoffScale = 0.95;       // 0.475 x the lower Nyquist — the same passband edge as before
+    const auto y = felitronics::convolution::resampleIr(x, srIn, srOut, cfg);
+    return { y.begin(), y.end() };
 }
 
 } // namespace ocap

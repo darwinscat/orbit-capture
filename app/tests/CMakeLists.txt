@@ -19,7 +19,7 @@ set(OC_TEST_INCLUDES
     ${CMAKE_CURRENT_SOURCE_DIR}/../src
     ${CMAKE_CURRENT_SOURCE_DIR}/../../dsp/include
     ${felitronics_core_SOURCE_DIR}/test_support)
-set(OC_TEST_LIBS felitronics::core felitronics::measurement felitronics::analysis felitronics::blend)
+set(OC_TEST_LIBS felitronics::core felitronics::measurement felitronics::analysis felitronics::blend felitronics::convolution)
 
 function(oc_add_test name src)
     add_executable(${name} ${src})
