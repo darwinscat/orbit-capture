@@ -32,6 +32,30 @@ set(OC_CORE_SRC "${CMAKE_CURRENT_SOURCE_DIR}/../../felitronics-core" CACHE PATH 
 FetchContent_Declare(felitronics_core SOURCE_DIR "${OC_CORE_SRC}")
 FetchContent_MakeAvailable(felitronics_core)
 
+# felitronics-appkit — the family's shared APP-SIDE JUCE infrastructure (the update checker).
+# Same sibling-checkout convention as felitronics-core; CI checks it out next to this repo.
+set(OC_APPKIT_SRC "${CMAKE_CURRENT_SOURCE_DIR}/../../felitronics-appkit" CACHE PATH "felitronics-appkit source")
+FetchContent_Declare(felitronics_appkit SOURCE_DIR "${OC_APPKIT_SRC}")
+FetchContent_MakeAvailable(felitronics_appkit)
+
+# The version the update checker reports. Release CI passes the tag (-DOC_VERSION=vX.Y.Z);
+# otherwise a configure-time `git describe` — a dev stamp counts OLDER than any release (the
+# appkit dev rule), so between-releases builds show the badge once a release exists. Configure-time
+# is fine here: CI always configures fresh, and a stale local stamp only mislabels a dev build.
+set(OC_VERSION "" CACHE STRING "Version stamp for the update check (vX.Y.Z); empty = git describe")
+if(NOT OC_VERSION)
+  find_package(Git QUIET)
+  if(Git_FOUND)
+    execute_process(COMMAND "${GIT_EXECUTABLE}" describe --tags --always --dirty
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        OUTPUT_VARIABLE OC_VERSION OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+  endif()
+  if(NOT OC_VERSION)
+    set(OC_VERSION "unknown")
+  endif()
+endif()
+message(STATUS "OrbitCapture update-check version stamp: ${OC_VERSION}")
+
 juce_add_gui_app(OrbitCaptureApp
     PRODUCT_NAME "OrbitCapture"
     COMPANY_NAME "Darwin's Cat"
@@ -51,10 +75,12 @@ target_compile_definitions(OrbitCaptureApp PRIVATE
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
     JUCE_APPLICATION_NAME_STRING="OrbitCapture"
-    JUCE_APPLICATION_VERSION_STRING="0.1.0")
+    JUCE_APPLICATION_VERSION_STRING="0.1.0"
+    OC_VERSION_STRING="${OC_VERSION}")
 target_include_directories(OrbitCaptureApp PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../dsp/include" "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(OrbitCaptureApp PRIVATE
     OrbitCaptureAssets
+    felitronics::appkit
     felitronics::core
     felitronics::measurement
     felitronics::analysis
