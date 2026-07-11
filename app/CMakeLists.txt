@@ -59,6 +59,7 @@ target_link_libraries(OrbitCaptureApp PRIVATE
     felitronics::measurement
     felitronics::analysis
     felitronics::blend
+    felitronics::convolution
     juce::juce_dsp
     juce::juce_audio_utils
     juce::juce_recommended_config_flags

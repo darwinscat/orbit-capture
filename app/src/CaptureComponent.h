@@ -417,6 +417,9 @@ public:
                                             + " s - press Rec again to save.", juce::dontSendNotification);
         }
         reviewTab.playBtn.setPlaying(samplePlaying());                 // ▶/■ follows the actual stream state
+        if (!pendingLiveIr.empty() && !engine.liveConv.isBusy())       // coalesced live-IR swap (see reloadLiveIR)
+            if (engine.liveConv.setIr(pendingLiveIr.data(), (int)pendingLiveIr.size()))
+                pendingLiveIr.clear();
     }
     // The SAMPLE is audible (pre-rendered audition, or the DI-through-IR stream; mode 2 = live monitor).
     bool samplePlaying() const { return engine.audition.playing.load() || engine.conv.mode.load() == 1; }
@@ -424,14 +427,13 @@ public:
     void updateLiveSpectrum() {
         const bool onReview = tabs.getCurrentTabIndex() == 2;
         if (onReview && analyzerOn && !lastIRs.empty() && (engine.audition.playing.load() || engine.conv.mode.load() != 0)) {
-            static constexpr int F = 2048;
+            constexpr int F = felitronics::analysis::SpectrumTap::kSize;   // 2048 — the tap's frame contract
             std::vector<float> buf((size_t)F);
-            const uint32_t w = engine.specW.load(std::memory_order_relaxed);
-            for (int i = 0; i < F; ++i) {
-                const float win = 0.5f - 0.5f * std::cos(6.2831853f * (float)i / (float)(F - 1));   // Hann
-                buf[(size_t)i] = engine.specRing[(w - (uint32_t)F + (uint32_t)i) & (engine.kSpecRing - 1)] * win;
-            }
-            reviewTab.spectrumView.setLiveSpectrum(SpectrumView::makeCurve(buf, engine.sampleRate, true));
+            if (engine.spec.tryPull(buf.data())) {                         // a fresh SPSC frame is ready
+                for (int i = 0; i < F; ++i)
+                    buf[(size_t)i] *= 0.5f - 0.5f * std::cos(6.2831853f * (float)i / (float)(F - 1));   // Hann
+                reviewTab.spectrumView.setLiveSpectrum(SpectrumView::makeCurve(buf, engine.sampleRate, true));
+            }                                                              // no frame yet → keep the last curve
         } else {
             reviewTab.spectrumView.setLiveSpectrum({});
         }
@@ -952,12 +954,12 @@ private:
             const float g = monitorGainFor(ir) * master;              // currentOutputIR had master inside; the
             for (float& v : ir) v *= g;                               // match wiped it — re-applied once here
         }
-        juce::AudioBuffer<float> buf(1, (int)ir.size());
-        std::copy(ir.begin(), ir.end(), buf.getWritePointer(0));
-        engine.liveConv.loadImpulseResponse(std::move(buf), lastIRSr,
-                                     juce::dsp::Convolution::Stereo::no,
-                                     juce::dsp::Convolution::Trim::no,
-                                     juce::dsp::Convolution::Normalise::no);
+        // Core convolver: warm-crossfade swap, click-free from the first block. setIr() refuses
+        // while a previous swap is still fading — stash the IR and let the timer retry (coalesce),
+        // exactly the adapter contract the engine documents. Latest-wins: a knob drag mid-fade
+        // just replaces the pending IR.
+        if (!engine.liveConv.setIr(ir.data(), (int)ir.size())) pendingLiveIr = std::move(ir);
+        else pendingLiveIr.clear();
     }
     // Stream the DI clip through the live convolver (wet audition) — knob turns are heard immediately.
     void startWetAudition() {
@@ -1987,6 +1989,7 @@ private:
     KnobLNF knobLnf;                                 // phase/shift dials (value inside) — declared before reviewTab (outlives its strips)
     MixStrip* activeStrip = nullptr;                  // whose HPF/LPF the graph drag edits (default: Master)
     double overlayRefDb = std::numeric_limits<double>::quiet_NaN();   // per-take display anchor (initial blend peak + 6 dB)
+    std::vector<float> pendingLiveIr;                 // live-IR swap coalesced while the convolver fades
     bool analyzerOn = true;                           // live-analyser overlay (the graph's gear menu)
     bool legendOn = true;                             // channel legend on the graph (gear menu toggle)
 
@@ -2006,8 +2009,8 @@ private:
     juce::TooltipWindow tooltips { this };     // one shared tooltip window — without it setTooltip is silent
     juce::TabbedComponent tabs { juce::TabbedButtonBar::TabsAtTop };
     // liveConv/liveScratch/liveChannel/liveMaxBlock + the conv stream now live on `engine`.
-    // live spectrum analyser: audio thread pushes the playing output into a ring (engine.specRing/
-    // specW/specPush); the timer FFTs it.
+    // live spectrum analyser: the audio thread pushes into engine.spec (core SpectrumTap);
+    // the timer pulls frames and FFTs them.
     std::vector<DiClip> factoryClips, userClips;      // built-in riffs · user samples (persist in app-data; DiClip above)
     std::unique_ptr<juce::FileChooser> diChooser;
     juce::AudioFormatManager diFormats;

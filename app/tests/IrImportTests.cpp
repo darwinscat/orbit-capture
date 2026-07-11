@@ -56,15 +56,19 @@ int main()
 
     group ("onset alignment (appended channels must share the take's time reference)");
     {
+        // onsetIndex delegates to core measurement::detectOnset: peak-backwards attack search with
+        // an 8-sample pre-roll — the index sits just BEFORE the attack (192 for an impulse at 200).
         std::vector<double> late (400, 0.0); late[200] = 1.0; late[201] = 0.4;
-        ok (onsetIndex (late) == 200, "onset = first sample over 10% of peak");
+        ok (onsetIndex (late) == 200 - 8, "onset = attack minus the core detector's pre-roll");
         alignOnsetTo (late, 50);
-        ok (late[50] == 1.0 && late[51] == 0.4, "late onset pulled forward to the reference");
+        ok (onsetIndex (late) == 50, "late onset pulled onto the reference index");
+        ok (late[58] == 1.0 && late[59] == 0.4, "the impulse itself lands pre-roll past the reference");
         ok (late.size() == 400 && late[200] == 0.0, "length preserved, old position cleared");
 
         std::vector<double> early (400, 0.0); early[10] = -0.8;
         alignOnsetTo (early, 60);
-        ok (early[60] == -0.8 && early[10] == 0.0, "early onset pushed back (front-padded)");
+        ok (onsetIndex (early) == 60 && early[10] == 0.0, "early onset pushed back (front-padded)");
+        ok (early[68] == -0.8, "impulse sits pre-roll past the reference");
 
         std::vector<double> flat (100, 0.0);
         alignOnsetTo (flat, 30);                                       // silence: nothing to align, no crash

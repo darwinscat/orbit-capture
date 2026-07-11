@@ -11,8 +11,10 @@
 #include "oc/sweep.hpp"
 #include "audio/RtStreams.h"
 
+#include <felitronics/analysis/SpectrumTap.h>
+#include <felitronics/convolution/ConvolutionEngine.h>
+
 #include <juce_audio_devices/juce_audio_devices.h>
-#include <juce_dsp/juce_dsp.h>
 
 #include <array>
 #include <atomic>
@@ -45,18 +47,21 @@ struct AudioEngine : public juce::AudioIODeviceCallback {
     AuditionStream audition;
     ConvStream conv;                              // mode: 0 off · 1 DI-through-IR · 2 live-input-through-IR
 
-    // Play live: monitor a chosen input through the current IR (RT-safe partitioned convolution).
-    juce::dsp::Convolution liveConv;
+    // Play live: monitor a chosen input through the current IR — core's swap-safe, click-free
+    // partitioned convolver (zero latency, warm-crossfade setIr; replaces juce::dsp::Convolution
+    // and with it the whole juce_dsp dependency). setIr coalescing lives on the owner (timer).
+    static constexpr int kMaxLiveIr = 1 << 18;    // ~2.7 s @ 96 kHz — covers every take length
+    felitronics::convolution::ConvolutionEngine<felitronics::core::fft::DefaultRealFft, 1> liveConv;
     std::vector<float> liveScratch;
     std::atomic<int> liveChannel { 0 };
     int liveMaxBlock = 512;
     RecStream rec;                                // records the DRY live input (the user's own DI sample)
 
-    // live spectrum analyser: audio thread pushes the playing output into a ring; the timer FFTs it
-    static constexpr int kSpecRing = 4096;
-    std::array<float, kSpecRing> specRing {};
-    std::atomic<uint32_t> specW { 0 };
-    inline void specPush(float s) { specRing[specW.fetch_add(1, std::memory_order_relaxed) & (kSpecRing - 1)] = s; }
+    // live spectrum analyser: the audio thread pushes the playing output into core's SpectrumTap
+    // (SPSC, cache-line-split handshake — fixes the old plain-array ring's formal data race);
+    // the GUI timer tryPull()s frames and FFTs them.
+    felitronics::analysis::SpectrumTap spec;
+    inline void specPush(float s) { spec.push(s); }
 
     // capture-done signal: RT-safe — this struct calls it, the owner (CaptureComponent, the
     // AsyncUpdater) triggers the async update from inside.
@@ -68,9 +73,9 @@ struct AudioEngine : public juce::AudioIODeviceCallback {
         sampleRate = d->getCurrentSampleRate();
         liveMaxBlock = juce::jmax(32, d->getCurrentBufferSizeSamples());
         liveScratch.assign((size_t)liveMaxBlock, 0.0f);
-        juce::dsp::ProcessSpec spec { sampleRate, (juce::uint32)liveMaxBlock, 1 };
-        liveConv.prepare(spec); liveConv.reset();
+        liveConv.prepare(512, kMaxLiveIr, 512, 1);        // P=512, click-free 512-sample warm swaps
         rec.reserve((size_t)(sampleRate * 60.0));         // device stopped here — safe to (re)size
+        this->spec.reset();
         prepareSweep();
     }
     void audioDeviceStopped() override {}
@@ -108,10 +113,7 @@ struct AudioEngine : public juce::AudioIODeviceCallback {
                         if (rec.recording.load(std::memory_order_relaxed)) rec.push(mono[i]);   // DRY, pre-conv
                     }
                 }
-                float* chans[1] = { mono };
-                juce::dsp::AudioBlock<float> block(chans, 1, (size_t)nn);
-                juce::dsp::ProcessContextReplacing<float> ctx(block);
-                liveConv.process(ctx);
+                liveConv.process(mono, mono, nn);              // in-place, RT-safe, zero latency
                 for (int i = 0; i < nn; ++i) { const float s = mono[i]; for (int c = 0; c < numOut; ++c) if (out[c]) out[c][i] = s; specPush(s); }
                 for (int i = nn; i < n; ++i) for (int c = 0; c < numOut; ++c) if (out[c]) out[c][i] = 0.0f;
                 if (cm == 1) { conv.pos.store(dp); if (dp >= dlen && !loop) conv.mode.store(0, std::memory_order_release); }   // ended; timer catches up
