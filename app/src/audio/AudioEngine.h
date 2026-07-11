@@ -110,7 +110,10 @@ struct AudioEngine : public juce::AudioIODeviceCallback {
                         mono[i] = conv.buf[(size_t)dp++];
                     } else {                                                    // live input through the IR
                         mono[i] = (ch >= 0 && ch < numIn && in[ch]) ? in[ch][i] : 0.0f;
-                        if (rec.recording.load(std::memory_order_relaxed)) rec.push(mono[i]);   // DRY, pre-conv
+                        // ACQUIRE gate (crew fix): pairs with start()'s release so the len=0 rewind is
+                        // visible before the first push — a relaxed gate could see its own stale full
+                        // length and drop the head of the take.
+                        if (rec.recording.load(std::memory_order_acquire)) rec.push(mono[i]);   // DRY, pre-conv
                     }
                 }
                 liveConv.process(mono, mono, nn);              // in-place, RT-safe, zero latency
