@@ -118,8 +118,7 @@ public:
             { auto a = row(30); setupCloseBtn.setBounds(a.removeFromRight(90)); }
         };
         setupPanel.setSize(320, 120);
-        setupBtn.setButtonText(juce::String::fromUTF8("\xe2\x9a\x99"));   // gear glyph
-        setupBtn.setTooltip("Setup: distance units + advanced review toggles");
+        setupBtn.setTooltip("Setup: distance units + advanced review toggles");   // draws its own big ⚙
         setupBtn.onClick = [this] { showSetupDialog(); };
         addAndMakeVisible(setupBtn);
         newSessionBtn.setButtonText("+");
@@ -203,6 +202,8 @@ public:
         reviewTab.takesCap.setText("TAKES", juce::dontSendNotification);
         reviewTab.takesCap.setFont(juce::FontOptions(11.0f, juce::Font::bold));
         reviewTab.takesCap.setColour(juce::Label::textColourId, brand::lilac);
+        reviewTab.takesCap.setJustificationType(juce::Justification::centredLeft);
+        reviewTab.deleteTakeBtn.setTooltip("Delete the current take (its files are removed).");
         reviewTab.playLiveBtn.setButtonText("Play live");
         reviewTab.playLiveBtn.setClickingTogglesState(true);
         reviewTab.playLiveBtn.setColour(juce::TextButton::buttonOnColourId, brand::orange.darker(0.1f));
@@ -231,7 +232,6 @@ public:
                            juce::dontSendNotification);
         reviewTab.takeBox.setTextWhenNothingSelected("takes");
         reviewTab.takeBox.onChange = [this] { if (reviewTab.takeBox.getSelectedId() > 0) loadTake(reviewTab.takeBox.getSelectedId() - 1); };
-        reviewTab.deleteTakeBtn.setButtonText("x");
         reviewTab.deleteTakeBtn.onClick = [this] {
             if (currentTake < 0 || currentTake >= (int)takeDirs.size()) return;
             const auto d = takeDirs[(size_t)currentTake];
@@ -249,17 +249,24 @@ public:
         reviewTab.spectrumView.onGearMenu = [this](juce::Rectangle<int> screenArea) {
             juce::PopupMenu m;
             m.addItem(1, "Live spectrum analyser", true, analyzerOn);
+            m.addItem(2, "Channel legend", true, legendOn);
             m.showMenuAsync(juce::PopupMenu::Options().withTargetScreenArea(screenArea), [this](int r) {
                 if (r == 1) { analyzerOn = !analyzerOn; updateLiveSpectrum(); }
+                if (r == 2) { legendOn = !legendOn; updateLegend(); }
             });
         };
         reviewTab.spectrumView.onFilterDrag = [this](double hpHz, int hpDb, double lpHz, int lpDb) {   // graph → the active strip
             MixStrip* a = activeStrip ? activeStrip : reviewTab.masterStrip.get();
             if (a == nullptr) return;
             a->hpfHz = hpHz; a->hpfSlopeDb = hpDb; a->lpfHz = lpHz; a->lpfSlopeDb = lpDb;
-            refreshSpectrum(); if (engine.conv.mode.load() != 0) reloadLiveIR();
+            // LIGHT during a drag: move the line + its own EQ curve only (cheap repaint). The full
+            // overlay recompute (8 mic FFT curves + interference) is deferred to drag-end — doing it
+            // per mouse-move made the drag stutter. Live audio still tracks if it's playing.
+            reviewTab.spectrumView.setActiveFilter(true, a->hpBtn.getToggleState(), a->lpBtn.getToggleState(),
+                                                   hpHz, hpDb, lpHz, lpDb, a->colour);
+            if (engine.conv.mode.load() != 0) reloadLiveIR();
         };
-        reviewTab.spectrumView.onFilterDragEnd = [this] { saveMixToTake(); };
+        reviewTab.spectrumView.onFilterDragEnd = [this] { refreshSpectrum(); saveMixToTake(); };
         reviewTab.spectrumView.onPickTrace = [this](int idx) {                      // click a mic curve → its strip; the composite → Master
             if (idx >= 0 && idx < (int)reviewTab.mixRows.size()) setActiveStrip(reviewTab.mixRows[(size_t)idx].get());
             else if (reviewTab.masterStrip) setActiveStrip(reviewTab.masterStrip.get());
@@ -270,8 +277,7 @@ public:
             if (i >= 0 && i < (int)reviewTab.mixRows.size()) setActiveStrip(reviewTab.mixRows[(size_t)i].get());
             else if (reviewTab.masterStrip) setActiveStrip(reviewTab.masterStrip.get());
         };
-        reviewTab.importIrsBtn.setButtonText("New take...");
-        reviewTab.importIrsBtn.setTooltip("Create a new empty take (you name it), then add IR files via the console's [+].");
+        reviewTab.importIrsBtn.setTooltip("New empty take (you name it), then add IR files via the console's [+].");
         reviewTab.importIrsBtn.onClick = [this] { newEmptyTake(); };
 
         // ---- Export tab (ui/tabs/ExportTab.h owns the widgets; the buttons are wired here) ----
@@ -331,8 +337,9 @@ public:
         header.clickRight = 1 << 30;                                       // whole header is the site link again
         tabs.setBounds(r);
         // session management sits on the right of the tab-bar row
-        auto sb = juce::Rectangle<int>(r.getRight() - 410, r.getY(), 404, tabs.getTabBarDepth()).withSizeKeepingCentre(400, 24);
-        setupBtn.setBounds(sb.removeFromRight(30)); sb.removeFromRight(4);        // gear last
+        const int rowH = tabs.getTabBarDepth();
+        auto sb = juce::Rectangle<int>(r.getRight() - 410, r.getY(), 404, rowH).withSizeKeepingCentre(400, juce::jmax(24, rowH - 2));
+        setupBtn.setBounds(sb.removeFromRight(rowH)); sb.removeFromRight(4);      // gear last — a full-height square
         newSessionBtn.setBounds(sb.removeFromRight(26)); sb.removeFromRight(4);
         sessionBox.setBounds(sb);   // ~336 wide (2x the old ~140)
     }
@@ -1023,7 +1030,7 @@ private:
     // short token) + the MIX row; the active strip's row is highlighted. Click a row → its strip.
     void updateLegend() {
         std::vector<SpectrumView::LegendEntry> le;
-        if (!reviewTab.mixRows.empty()) {
+        if (legendOn && !reviewTab.mixRows.empty()) {
             const auto strips = gatherStrips();
             for (int m = 0; m < (int)reviewTab.mixRows.size() && m < lastIRNames.size(); ++m) {
                 const auto desc = lastIRFileBases[m].fromFirstOccurrenceOf(" - ", false, false);
@@ -1111,9 +1118,8 @@ private:
         // HPF / LPF each enable a side of the strip's filter (default 80 Hz·24 / 8 kHz·12 — benign on an
         // accidental toggle); the cutoff is dragged on the graph (up/down = slope), the wheel steps the slope.
         const juce::String what = s.isMaster ? "mix" : "mic";
-        for (auto* fb : { &s.hpBtn, &s.lpBtn }) {
-            fb->setColour(juce::TextButton::buttonOnColourId, col.withAlpha(0.9f));
-            fb->setColour(juce::TextButton::textColourOnId, juce::Colours::black);
+        for (auto* fb : { &s.hpBtn, &s.lpBtn }) {                     // drawn slope icons; tint = strip colour
+            fb->accent = col;
             fb->onClick = [this, sp] { setActiveStrip(sp); refreshSpectrum();
                                        if (engine.conv.mode.load() != 0) reloadLiveIR(); saveMixToTake(); };
         }
@@ -1607,29 +1613,30 @@ private:
         const auto dir = takeDirs[(size_t)currentTake];
         const auto meta = store_.loadTakeMeta(dir);
         if (m >= (int)meta.mics.size()) return;
+        // A modal DialogWindow (NOT a CallOutBox — its modal state makes the Save button need a
+        // double-click, and rebuilding the console would orphan an anchored callout). Save closes
+        // it in one click; the metadata write refreshes labels in place, no mixer rebuild.
         struct Panel : juce::Component {
-            juce::ComboBox model, axis, position;
-            juce::TextEditor dist; juce::Label distLbl { {}, "distance" }, unitLbl;
-            juce::TextButton save { "Save" };
+            juce::Label mL { {}, "model" }, aL { {}, "axis" }, pL { {}, "position" }, dL { {}, "distance" };
+            juce::ComboBox model, axis, position, dist;               // dist = editable combo (presets + custom)
+            juce::TextButton save { "Save" }, cancel { "Cancel" };
             void resized() override {
-                auto r = getLocalBounds().reduced(10);
-                model.setBounds(r.removeFromTop(26)); r.removeFromTop(6);
-                axis.setBounds(r.removeFromTop(26)); r.removeFromTop(6);
-                position.setBounds(r.removeFromTop(26)); r.removeFromTop(6);
-                { auto a = r.removeFromTop(26);
-                  distLbl.setBounds(a.removeFromLeft(66));
-                  dist.setBounds(a.removeFromLeft(64)); a.removeFromLeft(6);
-                  unitLbl.setBounds(a.removeFromLeft(30)); }
-                r.removeFromTop(8);
-                save.setBounds(r.removeFromTop(26).removeFromRight(80));
+                auto r = getLocalBounds().reduced(12);
+                auto row = [&r](juce::Label& l, juce::Component& c) {
+                    auto a = r.removeFromTop(26); l.setBounds(a.removeFromLeft(72)); c.setBounds(a); r.removeFromTop(7); };
+                row(mL, model); row(aL, axis); row(pL, position); row(dL, dist);
+                r.removeFromTop(6);
+                auto b = r.removeFromTop(28);
+                save.setBounds(b.removeFromRight(84)); b.removeFromRight(8); cancel.setBounds(b.removeFromRight(84));
             }
         };
         auto panel = std::make_unique<Panel>();
-        panel->setSize(240, 200);
-        for (juce::Component* c : { (juce::Component*)&panel->model, (juce::Component*)&panel->axis,
+        panel->setSize(300, 210);
+        for (juce::Component* c : { (juce::Component*)&panel->mL, (juce::Component*)&panel->aL,
+                                    (juce::Component*)&panel->pL, (juce::Component*)&panel->dL,
+                                    (juce::Component*)&panel->model, (juce::Component*)&panel->axis,
                                     (juce::Component*)&panel->position, (juce::Component*)&panel->dist,
-                                    (juce::Component*)&panel->distLbl, (juce::Component*)&panel->unitLbl,
-                                    (juce::Component*)&panel->save })
+                                    (juce::Component*)&panel->save, (juce::Component*)&panel->cancel })
             panel->addAndMakeVisible(c);
         panel->model.setEditableText(true);                            // type a NEW model -> user mic list
         panel->model.setTextWhenNothingSelected("mic model");
@@ -1639,51 +1646,108 @@ private:
         { const juce::String ax(meta.mics[(size_t)m].axis);
           if (ax.isNotEmpty()) panel->axis.setSelectedId(vocab::axis.indexOf(ax) + 1, juce::dontSendNotification); }
         panel->position.setEditableText(true);
-        panel->position.setTextWhenNothingSelected("position (optional)");
+        panel->position.setTextWhenNothingSelected("position");
         for (int i = 0; i < vocab::positions.size(); ++i) panel->position.addItem(vocab::positions[i], i + 1);
         { const juce::String pos(meta.mics[(size_t)m].position);
           if (pos.isNotEmpty()) panel->position.setText(pos, juce::dontSendNotification); }
-        panel->dist.setInputRestrictions(6, "0123456789.");
-        panel->dist.setTextToShowWhenEmpty("-", juce::Colours::grey);
-        if (meta.mics[(size_t)m].distanceMm > 0) {
+        // distance: editable combo (arbitrary values by typing — a room mic can sit anywhere);
+        // the presets track the channel's location (grille = close, room/rear = far).
+        panel->dist.setEditableText(true);
+        panel->dist.setTextWhenNothingSelected(distUnitText());
+        { const bool far = meta.mics[(size_t)m].location == "room" || meta.mics[(size_t)m].location == "rear";
+          const char* grille[] = { "0", "1", "2", "3", "5", "8", "10", "15" };
+          const char* room[]   = { "15", "30", "45", "60", "90", "120", "150", "200" };
+          int id = 1;
+          for (const char* d : (far ? room : grille))
+              if (id <= 8) panel->dist.addItem(juce::String(d) + " " + distUnitText(), id++); }
+        if (meta.mics[(size_t)m].distanceInput.size() > 0)
+            panel->dist.setText(juce::String(meta.mics[(size_t)m].distanceInput), juce::dontSendNotification);
+        else if (meta.mics[(size_t)m].distanceMm > 0) {
             const double v = distIsInches() ? meta.mics[(size_t)m].distanceMm / 25.4
                                             : meta.mics[(size_t)m].distanceMm / 10.0;
-            panel->dist.setText(juce::String(v, (v == (double)(int)v) ? 0 : 1), false);
+            panel->dist.setText(juce::String(v, (v == (double)(int)v) ? 0 : 1) + " " + distUnitText(), juce::dontSendNotification);
         }
-        panel->unitLbl.setText(distUnitText(), juce::dontSendNotification);
         auto* p = panel.get();
-        p->save.onClick = [this, m, p, dir] {
+        auto readAndApply = [this, m, p, dir] {
             const juce::String mdl = p->model.getText().trim();
-            if (mdl.isNotEmpty() && !listStore.get("mic").contains(mdl, true)) {
-                listStore.add("mic", mdl);                             // a typed model joins the user mic list
-                for (auto& mr : takeTab.micRows) refreshMicCombo(mr->mic, mr->mic.getText());
+            const juce::String ax  = p->axis.getText();
+            const juce::String pos = p->position.getText().trim();
+            const juce::String dtext = p->dist.getText().trim();       // "5 cm" / "5" / ""
+            const double dv = dtext.getDoubleValue();                  // leading number
+            int distMm = 0; juce::String distInput;
+            if (dtext.isNotEmpty() && dv > 0.0) {
+                distMm = juce::roundToInt(distIsInches() ? dv * 25.4 : dv * 10.0);
+                distInput = juce::String(dv, (dv == (double)(int)dv) ? 0 : 1) + " " + distUnitText();
             }
-            const auto v = juce::JSON::parse(dir.getChildFile("take.json").loadFileAsString());
-            if (auto* arr = v.getProperty("mics", juce::var()).getArray())
-                if (m < arr->size())
-                    if (auto* mo = (*arr)[m].getDynamicObject()) {
-                        mo->setProperty("model", mdl);
-                        mo->setProperty("axis",  p->axis.getText());
-                        mo->setProperty("position", p->position.getText().trim());
-                        const double dv = p->dist.getText().getDoubleValue();
-                        if (p->dist.getText().trim().isNotEmpty() && dv > 0.0) {
-                            mo->setProperty("distance_mm", juce::roundToInt(distIsInches() ? dv * 25.4 : dv * 10.0));
-                            mo->setProperty("distance_input", p->dist.getText().trim() + " " + distUnitText());
-                        } else {
-                            mo->setProperty("distance_mm", 0);
-                            mo->setProperty("distance_input", juce::String());
-                        }
-                        if (auto* o = v.getDynamicObject()) o->setProperty("mic", (*arr)[0]);   // v1 mirror
-                        dir.getChildFile("take.json").replaceWithText(juce::JSON::toString(v));
-                    }
-            if (auto* box = p->findParentComponentOfClass<juce::CallOutBox>()) box->dismiss();
-            loadTake(currentTake);                                     // refresh names / legend / labels
-            refreshTakeBox();
-            refreshExportStatus();
+            if (auto* dw = p->findParentComponentOfClass<juce::DialogWindow>()) dw->exitModalState(0);
+            applyChannelMeta(m, dir, mdl, ax, pos, distMm, distInput);
         };
-        const auto anchor = getLocalArea(reviewTab.mixRows[(size_t)m].get(),
-                                         reviewTab.mixRows[(size_t)m]->getLocalBounds());
-        juce::CallOutBox::launchAsynchronously(std::move(panel), localAreaToGlobal(anchor), nullptr);
+        p->save.onClick   = readAndApply;
+        p->cancel.onClick = [p] { if (auto* dw = p->findParentComponentOfClass<juce::DialogWindow>()) dw->exitModalState(0); };
+        juce::DialogWindow::LaunchOptions opt;
+        opt.content.setOwned(panel.release());
+        opt.dialogTitle = "Edit channel " + juce::String(m + 1);
+        opt.dialogBackgroundColour = juce::Colour(0xff23252b);
+        opt.escapeKeyTriggersCloseButton = true;
+        opt.useNativeTitleBar = false;
+        opt.resizable = false;
+        auto* dw = opt.launchAsync();
+        dw->centreAroundComponent(this, 300, 240);
+    }
+    // Persist one channel's edited metadata + refresh its labels IN PLACE (no mixer rebuild, so
+    // the active strip and any open UI stay put). A new model name joins the user mic list.
+    void applyChannelMeta(int m, const juce::File& dir, const juce::String& mdl, const juce::String& ax,
+                          const juce::String& pos, int distMm, const juce::String& distInput) {
+        if (mdl.isNotEmpty() && !listStore.get("mic").contains(mdl, true)) {
+            listStore.add("mic", mdl);
+            for (auto& mr : takeTab.micRows) refreshMicCombo(mr->mic, mr->mic.getText());
+        }
+        auto v = juce::JSON::parse(dir.getChildFile("take.json").loadFileAsString());
+        auto* arr = v.getProperty("mics", juce::var()).getArray();
+        if (!arr || m >= arr->size()) return;
+        if (auto* mo = (*arr)[m].getDynamicObject()) {
+            mo->setProperty("model", mdl);
+            mo->setProperty("axis", ax);
+            mo->setProperty("position", pos);
+            mo->setProperty("distance_mm", distMm);
+            mo->setProperty("distance_input", distInput);
+        }
+        if (auto* o = v.getDynamicObject()) o->setProperty("mic", (*arr)[0]);   // v1 mirror
+        dir.getChildFile("take.json").replaceWithText(juce::JSON::toString(v));
+        relabelChannels();                                             // strip captions + legend + take list
+        refreshTakeBox();
+        refreshExportStatus();
+    }
+    // Recompute per-channel display names/colours/file-bases from take.json + push them onto the
+    // existing strips — the label half of loadTake, without touching audio, strips or the mix.
+    void relabelChannels() {
+        if (currentTake < 0 || currentTake >= (int)takeDirs.size()) return;
+        const auto meta = store_.loadTakeMeta(takeDirs[(size_t)currentTake]);
+        const int N = juce::jmin((int)meta.mics.size(), (int)reviewTab.mixRows.size());
+        lastIRNames.clear(); lastIRFileBases.clear();
+        for (int m = 0; m < (int)meta.mics.size(); ++m) {
+            const auto& mm = meta.mics[(size_t)m];
+            const juce::String model = mm.model;
+            lastIRNames.add("mic" + juce::String(m + 1) + " " + (model.isEmpty() ? "?" : model)
+                            + " (in" + juce::String(mm.inputChannel) + ")");
+            juce::String pos = mm.position; if (pos.isEmpty()) pos = mm.location;
+            const juce::String dist = juce::String(mm.distanceInput).removeCharacters(" ");
+            const juce::String desc = (pos + " " + dist).trim();
+            const juce::String mdl = model.isEmpty() ? "mic" + juce::String(m + 1) : model;
+            lastIRFileBases.add(sanitizeName(mdl + (desc.isNotEmpty() ? " - " + desc : juce::String())));
+        }
+        for (int m = 0; m < N; ++m) {                                  // short token + input line on the strip
+            const auto model = lastIRFileBases[m].upToFirstOccurrenceOf(" - ", false, false).trim();
+            const int sp = model.lastIndexOfChar(' ');
+            reviewTab.mixRows[(size_t)m]->name.setText(sp >= 0 ? model.substring(sp + 1) : model, juce::dontSendNotification);
+            reviewTab.mixRows[(size_t)m]->sub.setText(lastIRNames[m].fromLastOccurrenceOf("(", false, false)
+                                                       .upToFirstOccurrenceOf(")", false, false), juce::dontSendNotification);
+            const auto d = lastIRFileBases[m].fromFirstOccurrenceOf(" - ", false, false);
+            reviewTab.mixRows[(size_t)m]->setTooltip(lastIRNames[m] + (d.isNotEmpty() ? "  -  " + d : juce::String())
+                                                     + "\n(double-click / right-click: edit; x: delete)");
+            reviewTab.mixRows[(size_t)m]->repaint();
+        }
+        updateLegend();
     }
     void confirmDeleteChannel(int m) {
         if (currentTake < 0 || currentTake >= (int)takeDirs.size()
@@ -1894,7 +1958,8 @@ private:
     juce::File sessionDir;
     juce::ComboBox sessionBox;                 // session picker (header, top-right)
     std::vector<juce::File> sessionList;
-    juce::TextButton newSessionBtn, setupBtn;     // + = new session · gear = Setup dialog
+    juce::TextButton newSessionBtn;               // + = new session
+    GearButton setupBtn;                          // gear = Setup dialog (draws a large ⚙)
     Page setupPanel;                              // Setup dialog content (units + advanced review toggles)
     juce::Label unitLbl;                          // "Distance units" row label in Setup
     juce::TextButton setupCloseBtn { "Close" };
@@ -1923,6 +1988,7 @@ private:
     MixStrip* activeStrip = nullptr;                  // whose HPF/LPF the graph drag edits (default: Master)
     double overlayRefDb = std::numeric_limits<double>::quiet_NaN();   // per-take display anchor (initial blend peak + 6 dB)
     bool analyzerOn = true;                           // live-analyser overlay (the graph's gear menu)
+    bool legendOn = true;                             // channel legend on the graph (gear menu toggle)
 
     // ---- the four tab views (ui/tabs/): dumb widgets + layout; all wiring stays here ----
     AudioTab audioTab;

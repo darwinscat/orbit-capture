@@ -30,6 +30,34 @@ struct PlayStopButton : juce::Button {
     }
 };
 
+// Small drawn glyph buttons for the TAKES row — flat, hover-lit, grey stroke. Kept as a matched
+// pair (plus + trash) so the two controls read as one set. `plus` = new take, `trash` = delete.
+struct IconButton : juce::Button {
+    enum Kind { Plus, Trash } kind;
+    explicit IconButton(Kind k) : juce::Button("icon"), kind(k) {}
+    void paintButton(juce::Graphics& g, bool over, bool down) override {
+        auto b = getLocalBounds().toFloat().reduced(2.0f);
+        if (over || down) { g.setColour(juce::Colours::white.withAlpha(down ? 0.16f : 0.09f)); g.fillRoundedRectangle(b, 3.0f); }
+        const float cx = b.getCentreX(), cy = b.getCentreY();
+        g.setColour(over ? juce::Colours::white : juce::Colours::grey);
+        if (kind == Plus) {
+            g.drawLine(cx - 5.0f, cy, cx + 5.0f, cy, 1.6f);
+            g.drawLine(cx, cy - 5.0f, cx, cy + 5.0f, 1.6f);
+        } else {
+            const float w = 9.0f, h = 9.0f, yc = cy + 1.0f;
+            g.drawLine(cx - w * 0.6f, yc - h * 0.5f, cx + w * 0.6f, yc - h * 0.5f, 1.4f);     // lid
+            g.drawLine(cx - w * 0.22f, yc - h * 0.72f, cx + w * 0.22f, yc - h * 0.72f, 1.4f); // handle
+            juce::Path can;                                                                    // body
+            can.startNewSubPath(cx - w * 0.45f, yc - h * 0.5f);
+            can.lineTo(cx - w * 0.36f, yc + h * 0.5f);
+            can.lineTo(cx + w * 0.36f, yc + h * 0.5f);
+            can.lineTo(cx + w * 0.45f, yc - h * 0.5f);
+            g.strokePath(can, juce::PathStrokeType(1.3f));
+            for (float dx : { -0.15f, 0.15f }) g.drawLine(cx + dx * w, yc - h * 0.28f, cx + dx * w, yc + h * 0.32f, 1.0f);
+        }
+    }
+};
+
 // Tab "3 Mixer" — the take EDITOR. Takes on top; the console (one vertical strip per channel,
 // a [+] column to append imported IRs, then Master) full-width; the response graph with the
 // colour legend; and a two-row transport under it (Sample row · Live row). One channel gets the
@@ -38,10 +66,10 @@ struct PlayStopButton : juce::Button {
 struct ReviewTab : juce::Component {
     static constexpr int kStripsH = 302;       // console region height
 
-    juce::Label takesCap;                      // "TAKES"
+    juce::Label takesCap;                      // "TAKES" (inline, left of the combo)
     juce::ComboBox takeBox;                    // pick a take
-    juce::TextButton importIrsBtn { "New from files..." };   // a NEW take from already-captured IR files
-    juce::TextButton deleteTakeBtn;
+    IconButton importIrsBtn { IconButton::Plus };    // a new empty take (fill it via the console [+])
+    IconButton deleteTakeBtn { IconButton::Trash };  // delete the current take
 
     juce::TextButton addChannelBtn { "+" };    // console column: append an IR to THIS take
     std::vector<std::unique_ptr<MixStrip>> mixRows;  // one strip per channel
@@ -82,15 +110,15 @@ struct ReviewTab : juce::Component {
 
     void resized() override {
         auto r = getLocalBounds().reduced(12);
-        takesCap.setBounds(r.removeFromTop(15)); r.removeFromTop(2);   // ---- TAKES ----
-        { auto a = r.removeFromTop(26);
-          deleteTakeBtn.setBounds(a.removeFromRight(28)); a.removeFromRight(6);
-          importIrsBtn.setBounds(a.removeFromRight(120)); a.removeFromRight(6); takeBox.setBounds(a); }
+        { auto a = r.removeFromTop(26);                               // ---- TAKES  [combo] [+] [trash] ----
+          takesCap.setBounds(a.removeFromLeft(50));
+          deleteTakeBtn.setBounds(a.removeFromRight(26)); a.removeFromRight(4);
+          importIrsBtn.setBounds(a.removeFromRight(26)); a.removeFromRight(6); takeBox.setBounds(a); }
         r.removeFromTop(8);
         if (!mixRows.empty()) {                                        // ---- the console, full width ----
             auto mid = r.removeFromTop(kStripsH);
             const int n = (int)mixRows.size();
-            const int stripW = juce::jlimit(46, 72, (mid.getWidth() - 44) / (n + 1));
+            const int stripW = juce::jlimit(58, 104, (mid.getWidth() - 44) / (n + 1));   // rarely >3 channels: keep them wide
             for (auto& mp : mixRows) { mp->setBounds(mid.removeFromLeft(stripW)); mid.removeFromLeft(4); }
             addChannelBtn.setBounds(mid.removeFromLeft(26).withTrimmedTop(kStripsH / 2 - 26).withHeight(52));
             mid.removeFromLeft(6);
@@ -108,12 +136,12 @@ struct ReviewTab : juce::Component {
           recBtn.setBounds(live.removeFromLeft(76));
           navToExport.setBounds(live.removeFromRight(150)); }
         r.removeFromBottom(4);
-        auto smp = r.removeFromBottom(28);
+        auto smp = r.removeFromBottom(28);                            // sample | load | del | bypass | loop | ▶/■
         { diBox.setBounds(smp.removeFromLeft(220)); smp.removeFromLeft(6);
           loadDiBtn.setBounds(smp.removeFromLeft(76)); smp.removeFromLeft(4);
           deleteSampleBtn.setBounds(smp.removeFromLeft(24)); smp.removeFromLeft(10);
-          bypassBtn.setBounds(smp.removeFromLeft(80)); smp.removeFromLeft(8);
-          loopToggle.setBounds(smp.removeFromRight(58)); smp.removeFromRight(6);
+          bypassBtn.setBounds(smp.removeFromLeft(80)); smp.removeFromLeft(6);
+          loopToggle.setBounds(smp.removeFromLeft(58)); smp.removeFromLeft(10);
           playBtn.setBounds(smp.removeFromLeft(64)); }                 // fixed-width ▶/■ transport
         r.removeFromBottom(4);
         reviewInfo.setBounds(r.removeFromBottom(16)); r.removeFromBottom(2);

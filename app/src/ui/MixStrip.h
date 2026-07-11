@@ -5,6 +5,33 @@
 #include "Knobs.h"
 #include "model/MixModel.h"   // ocap::StripParams / MasterParams — the strip reads/writes these
 
+// HPF / LPF toggle with a drawn filter-slope icon (the Г-shaped curve from tabby-eq's icon set) —
+// on = the strip's accent colour, off = grey. Clearer than "HPF"/"LPF" text in a narrow column.
+struct FilterIconButton : juce::Button {
+    bool highPass;
+    juce::Colour accent { juce::Colours::orange };
+    explicit FilterIconButton(bool hp) : juce::Button(hp ? "HPF" : "LPF"), highPass(hp) {}
+    void paintButton(juce::Graphics& g, bool over, bool down) override {
+        auto b = getLocalBounds().toFloat().reduced(1.0f);
+        const bool on = getToggleState();
+        g.setColour(on ? accent.withAlpha(0.9f) : juce::Colour(0xff2b2f36));
+        g.fillRoundedRectangle(b, 3.0f);
+        if (over || down) { g.setColour(juce::Colours::white.withAlpha(down ? 0.14f : 0.08f)); g.fillRoundedRectangle(b, 3.0f); }
+        auto a = b.reduced(4.0f, 3.0f);
+        // Г-shaped knee — VERBATIM from tabby-eq's FilterShapes: the transition squeezed into
+        // ~1/4 of the width (a steep knee), a soft corner at the plateau, then a flat top/foot.
+        const float x0 = a.getX(), x1 = a.getRight(), w = a.getWidth();
+        const float bot = a.getBottom() - 1.0f, mid = a.getCentreY();
+        juce::Path p;
+        if (highPass) { p.startNewSubPath(x0, bot);
+            p.cubicTo(x0 + w * 0.10f, bot, x0 + w * 0.12f, mid, x0 + w * 0.26f, mid); p.lineTo(x1, mid); }
+        else          { p.startNewSubPath(x0, mid); p.lineTo(x1 - w * 0.26f, mid);
+            p.cubicTo(x1 - w * 0.12f, mid, x1 - w * 0.10f, bot, x1, bot); }
+        g.setColour(on ? juce::Colours::black : juce::Colours::grey.brighter(0.1f));
+        g.strokePath(p, juce::PathStrokeType(1.6f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+    }
+};
+
 // Console-style fader look for the vertical gain slider: a dark groove with dB ticks and a
 // classic fader cap (gradient body + an accent line across the middle, tinted the mic colour).
 struct FaderLNF : juce::LookAndFeel_V4 {
@@ -55,10 +82,12 @@ struct MixStrip : juce::Component, public juce::SettableTooltipClient {
 
     juce::Label name;                                // short token: "C414" / "SM57" / "Master"
     juce::Label sub;                                 // small context line under the name: "in1"
-    juce::TextButton solo { "S" }, mute { "M" }, hpBtn { "HPF" }, lpBtn { "LPF" };   // enable this strip's HPF / LPF
+    juce::TextButton solo { "S" }, mute { "M" };     // channels only
+    FilterIconButton hpBtn { true }, lpBtn { false }; // enable this strip's HPF / LPF (drawn slope icons)
     juce::TextButton reset { "Reset" };              // Master only: whole mixer → flat
     juce::TextButton autoBtn { "Auto" };             // Master only: auto time/polarity alignment
-    juce::TextButton kill { juce::String::fromUTF8("\xc3\x97") };   // channels only: delete this channel
+    juce::TextButton edit { juce::String::fromUTF8("\xe2\x9c\x8e") };   // channels: edit mic info (pencil)
+    juce::TextButton kill { juce::String::fromUTF8("\xc3\x97") };       // channels: delete this channel
     juce::Slider gain;                               // console fader, dB readout below
     EditKnob phase, shift;                           // rotary knobs (channels only); single-click = type the value
     FaderLNF faderLnf;                               // per-strip: the cap's accent line = mic colour
@@ -80,20 +109,26 @@ struct MixStrip : juce::Component, public juce::SettableTooltipClient {
         gain.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 52, 15);
         gain.setSliderSnapsToMousePosition(false);                   // click on the groove selects, never jumps the value
         gain.setLookAndFeel(&faderLnf);
-        for (auto* b : (isMaster ? std::initializer_list<juce::TextButton*>{ &hpBtn, &lpBtn }
-                                 : std::initializer_list<juce::TextButton*>{ &solo, &mute, &hpBtn, &lpBtn }))
-            { b->setClickingTogglesState(true); addAndMakeVisible(b); }
+        for (auto* b : { &hpBtn, &lpBtn }) { b->setClickingTogglesState(true); addAndMakeVisible(b); }
+        if (!isMaster)
+            for (auto* b : { &solo, &mute }) { b->setClickingTogglesState(true); addAndMakeVisible(b); }
         if (isMaster) { addAndMakeVisible(reset); addAndMakeVisible(autoBtn); }   // where channels keep knobs/S/M
         else {
+            edit.onClick = [this] { if (onEdit) onEdit(); };
             kill.onClick = [this] { if (onDelete) onDelete(); };
-            kill.setColour(juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
-            kill.setColour(juce::TextButton::textColourOffId, juce::Colours::grey);
-            addAndMakeVisible(kill);                 // the orchestrator hides it on single-channel takes
+            for (auto* b : { &edit, &kill }) {       // flat glyph buttons flanking the "inN" line
+                b->setColour(juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
+                b->setColour(juce::TextButton::textColourOffId, juce::Colours::grey);
+                addAndMakeVisible(b);
+            }                                         // the orchestrator hides kill on single-channel takes
         }
         for (auto* c : (isMaster ? std::initializer_list<juce::Component*>{ &gain }
                                  : std::initializer_list<juce::Component*>{ &gain, &phase, &shift }))
             addAndMakeVisible(c);
-        addMouseListener(this, true);                // hear presses on CHILDREN too → select, don't swallow
+        // NB: no addMouseListener(this, true) — self-listening double-fires mouseDown/DoubleClick
+        // (it opened TWO channel editors). The name/sub labels don't intercept mouse clicks, so
+        // header presses reach the strip's own mouseDown/mouseDoubleClick; the knobs/buttons/fader
+        // call select() from their own callbacks, so clicking a control still activates the strip.
     }
     ~MixStrip() override {
         gain.setLookAndFeel(nullptr);
@@ -129,11 +164,17 @@ struct MixStrip : juce::Component, public juce::SettableTooltipClient {
         g.fillRoundedRectangle(b.getX() + 3.0f, b.getY() + 3.0f, b.getWidth() - 6.0f, 3.5f, 1.5f);
     }
     void resized() override {
-        if (!isMaster) kill.setBounds(getWidth() - 18, 7, 14, 13);   // top-right corner ×
         auto r = getLocalBounds().reduced(4);
         r.removeFromTop(6);                           // colour-cap gutter
-        name.setBounds(r.removeFromTop(15));
-        sub.setBounds(r.removeFromTop(11));
+        name.setBounds(r.removeFromTop(15));          // row 1: the short model token
+        if (!isMaster) {                              // row 2: [edit]  inN  [x]
+            auto a = r.removeFromTop(15);
+            edit.setBounds(a.removeFromLeft(18));
+            kill.setBounds(a.removeFromRight(18));
+            sub.setBounds(a);                         // "inN", centred between the buttons
+        } else {
+            sub.setBounds(r.removeFromTop(15));
+        }
         r.removeFromTop(3);
         if (!isMaster) {                              // knobs stacked (value drawn inside the dial)
             const int kw = juce::jmin(r.getWidth() - 4, 46);
