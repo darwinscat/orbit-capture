@@ -65,6 +65,12 @@ juce_add_gui_app(OrbitCaptureApp
     PRODUCT_NAME "OrbitCapture"
     COMPANY_NAME "Darwin's Cat"
     BUNDLE_ID "com.darwinscat.orbitcapture"
+    # Bundle / executable icon — the product's converging-arrows orbit mark
+    # (resources/icon/OrbitCapture.svg → …-1024.png; same pipeline as orbitcab). juceaide builds
+    # the macOS AppIcon.icns and the Windows .ico from this one 1024² PNG; no ICON_SMALL on
+    # purpose (JUCEUtils appends BIG-then-SMALL but juceaide reads them small-then-big, so
+    # passing both can swap the slots). Linux launcher icons are a packaging concern.
+    ICON_BIG "${CMAKE_CURRENT_SOURCE_DIR}/resources/icon/OrbitCapture-1024.png"
     MICROPHONE_PERMISSION_ENABLED TRUE
     MICROPHONE_PERMISSION_TEXT "OrbitCapture records the cabinet microphone to capture an impulse response.")
 juce_add_binary_data(OrbitCaptureAssets SOURCES
