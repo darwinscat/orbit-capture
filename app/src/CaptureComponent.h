@@ -14,6 +14,7 @@
 #include "oc/wav.hpp"
 #include "oc/fft.hpp"          // oc::convolve for the audition
 #include <felitronics/analysis/offline/SpectrumCurve.h>   // spectrum display curves (core)
+#include <felitronics/blend/Overlay.h>                    // the one-call mix-view facade (core, N6)
 #include <vector>
 #include <span>
 #include <algorithm>
@@ -1255,66 +1256,40 @@ private:
     void renderBlendOverlay() {
         if (reviewTab.mixRows.empty() || lastIRs.empty()) return;
         const auto strips = gatherStrips(); const auto master = gatherMaster();
-        std::vector<SpectrumView::Trace> tr;
-        std::vector<std::vector<double>> micC(lastIRs.size());
-        for (size_t m = 0; m < lastIRs.size(); ++m) {                  // per-mic curve WITH its filters + gain
-            std::vector<float> gi = ocap::processedMic(lastIRs[m], strips[m], lastIRSr);
-            const double g = std::pow(10.0, strips[m].gainDb / 20.0);
-            for (auto& v : gi) v *= (float)g;
-            micC[m] = SpectrumView::makeCurve(gi, lastIRSr, false);
-        }
-        const auto blend = computeBlend();                             // WITH global filter → white curve shows the rolloff
-        auto blendC = SpectrumView::makeCurve(blend, lastIRSr, false);
-        if (blendC.empty()) return;
-        // The interference tint reads the PRE-filter blend, so the HPF/LPF rolloff isn't mistaken for
-        // phase cancellation (which was painting the whole stopband red).
-        auto rawC = SpectrumView::makeCurve(computeBlend(false), lastIRSr, false);
-        // Master-filter magnitude (|H|, ~1 in the passband → 0 in the stopbands), used to GATE the
-        // interference tint: no phase-cancellation red where the Master HPF/LPF has removed the signal.
-        std::vector<double> mMag;
-        if (ocap::hpActiveSlope(master.hpf) || ocap::lpActiveSlope(master.lpf)) {
-            std::vector<float> imp(lastIRs[0].size(), 0.0f); imp[0] = 1.0f;
-            ocap::applyFilters(imp, master.hpf, master.lpf, lastIRSr);
-            auto mc = SpectrumView::makeCurve(imp, lastIRSr, false);   // dB, 0 at passband
-            mMag.resize(mc.size());
-            for (size_t p = 0; p < mc.size(); ++p) mMag[p] = std::pow(10.0, std::min(0.0, mc[p]) / 20.0);
-        }
+        // The domain half is core's one-call facade (blend::Overlay, reuse audit N6): per-mic
+        // curves post filters+gain, the blend curve post Master, and the interference column
+        // (pre-Master basis, Master-|H| tint fade) — the hard-won display semantics are
+        // documented THERE. This side keeps pure UI: the anchored reference, colours/weights,
+        // the active-strip highlight.
+        auto ov = felitronics::blend::makeOverlay(lastIRs, strips, master, lastIRSr);
+        if (ov.blend.empty()) return;
         // One shared display reference, ANCHORED when the take loads: the initial blend peak
-        // + 3 dB headroom, then never re-derived — so gain moves visibly move the picture
+        // + 6 dB headroom, then never re-derived — so gain moves visibly move the picture
         // (per-render re-normalizing made Master -24 dB look like nothing happened).
         if (std::isnan(overlayRefDb)) {
             double pk = -1e9;
-            for (double v : blendC) pk = std::max(pk, v);
+            for (double v : ov.blend) pk = std::max(pk, v);
             overlayRefDb = pk + 6.0;
         }
         const double ref = overlayRefDb;
-        // v0.7.0: interference (coherent − incoherent power sum, where phase eats/reinforces) comes from
-        // core; the Master-stopband tint gate is a display weight (not valid dB math), so it stays here.
-        namespace off = felitronics::analysis::offline;
-        std::vector<double> coherent(blendC.size());
-        for (size_t p = 0; p < blendC.size(); ++p) coherent[p] = (p < rawC.size()) ? rawC[p] : blendC[p];
-        std::vector<off::MicCurveView> mv; mv.reserve(micC.size());
-        for (size_t m = 0; m < micC.size(); ++m)
-            mv.push_back({ std::span<const double>(micC[m]), ocap::channelAudible(strips, m) });
-        std::vector<double> interf = off::interferenceDb(coherent, mv);
-        for (size_t p = 0; p < interf.size() && p < mMag.size(); ++p) interf[p] *= mMag[p];   // fade tint in the Master's stopband
         int activeMic = -1;                                            // the selected channel (its curve pops)
         for (size_t m = 0; m < reviewTab.mixRows.size(); ++m) if (activeStrip == reviewTab.mixRows[m].get()) activeMic = (int)m;
         const bool masterActive = (activeStrip == nullptr) || (reviewTab.masterStrip && activeStrip == reviewTab.masterStrip.get());
-        for (size_t m = 0; m < micC.size(); ++m) {                     // non-active mics first (dimmed underneath)
+        std::vector<SpectrumView::Trace> tr;
+        for (size_t m = 0; m < ov.mic.size(); ++m) {                   // non-active mics first (dimmed underneath)
             if ((int)m == activeMic) continue;
-            if (!ocap::channelAudible(strips, m)) continue;            // muted/off-solo mics leave the graph (legend keeps them)
-            for (auto& v : micC[m]) v -= ref;
+            if (!ov.audible[m]) continue;                              // muted/off-solo mics leave the graph (legend keeps them)
+            for (auto& v : ov.mic[m]) v -= ref;
             const float a = activeMic >= 0 || masterActive ? 0.5f : 0.75f;
-            tr.push_back({ std::move(micC[m]), lastIRColours[m].withAlpha(a), 1.0f, false });
+            tr.push_back({ std::move(ov.mic[m]), lastIRColours[m].withAlpha(a), 1.0f, false });
         }
-        for (auto& v : blendC) v -= ref;                               // the mix (white); brighter/thicker when Master is active
-        tr.push_back({ std::move(blendC), juce::Colours::white.withAlpha(masterActive ? 1.0f : 0.7f), masterActive ? 2.6f : 1.7f, true });
-        if (activeMic >= 0 && ocap::channelAudible(strips, (size_t)activeMic)) {   // the selected mic's curve, highlighted on top
-            for (auto& v : micC[(size_t)activeMic]) v -= ref;
-            tr.push_back({ std::move(micC[(size_t)activeMic]), lastIRColours[(size_t)activeMic], 2.6f, false });
+        for (auto& v : ov.blend) v -= ref;                             // the mix (white); brighter/thicker when Master is active
+        tr.push_back({ std::move(ov.blend), juce::Colours::white.withAlpha(masterActive ? 1.0f : 0.7f), masterActive ? 2.6f : 1.7f, true });
+        if (activeMic >= 0 && ov.audible[(size_t)activeMic]) {         // the selected mic's curve, highlighted on top
+            for (auto& v : ov.mic[(size_t)activeMic]) v -= ref;
+            tr.push_back({ std::move(ov.mic[(size_t)activeMic]), lastIRColours[(size_t)activeMic], 2.6f, false });
         }
-        reviewTab.spectrumView.setTraces(std::move(tr), std::move(interf));
+        reviewTab.spectrumView.setTraces(std::move(tr), std::move(ov.interference));
     }
     // ---- Export: deliverable files (pro-lib style folders: rates x lengths, 24-bit PCM) ----
     // One deliverable: resampled -> truncated to `len` -> short fade-out -> 24-bit PCM.

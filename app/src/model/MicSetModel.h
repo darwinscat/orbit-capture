@@ -9,7 +9,8 @@
 // first-free colour slot, and the preferred-spot search that keeps every new grille mic on a FREE
 // grid position. The UI builds MicRowSpec views of its rows at the call site — widgets never
 // enter this header.
-#include <cctype>
+#include <felitronics/measurement/ModelGuess.h>
+
 #include <cmath>
 #include <optional>
 #include <span>
@@ -88,44 +89,12 @@ inline std::optional<GrilleSpot> placeGrille(std::span<const MicRowSpec> rows, i
 }
 
 // ---- mic-model detection from a file name (imported IRs) ----------------------------------
-// "YA MES 412 TRAD 906-1.wav" + a catalog holding "Sennheiser e906" → "Sennheiser e906".
-// A catalog model's fingerprint is its last word ("e906", "SM57", "C414"); a file-name token
-// matches it exactly (case/punctuation-blind), or — weaker — matches its bare digits when
-// they're 3+ long ("906" → e906, but a lone "57" stays ambiguous). Exact beats digits; any
-// ambiguity (two models claiming the same token) yields no guess — never a silent wrong pick.
-
-inline std::vector<std::string> alnumTokens(const std::string& s) {
-    std::vector<std::string> out;
-    std::string cur;
-    for (char c : s) {
-        if (std::isalnum((unsigned char)c)) cur += (char)std::tolower((unsigned char)c);
-        else if (!cur.empty()) { out.push_back(cur); cur.clear(); }
-    }
-    if (!cur.empty()) out.push_back(cur);
-    return out;
-}
-
+// PROMOTED to core (measurement/ModelGuess.h, reuse audit N5) and crew-hardened there (the
+// tokenizer went locale-free). The conservative contract — exact fingerprint beats 3+-digit
+// fallback, any ambiguity yields no guess — is documented in the core header.
+inline std::vector<std::string> alnumTokens(const std::string& s) { return felitronics::measurement::alnumTokens(s); }
 inline std::string guessModel(const std::string& fileName, const std::vector<std::string>& catalog) {
-    const auto toks = alnumTokens(fileName);
-    std::string exact, digits;
-    int exactHits = 0, digitHits = 0;
-    for (const auto& model : catalog) {
-        const auto mt = alnumTokens(model);
-        if (mt.empty()) continue;
-        const std::string& fp = mt.back();                            // the fingerprint token
-        std::string num;
-        for (char c : fp) if (std::isdigit((unsigned char)c)) num += c;
-        bool hitExact = false, hitNum = false;
-        for (const auto& t : toks) {
-            if (t == fp) hitExact = true;
-            else if (num.size() >= 3 && t == num) hitNum = true;
-        }
-        if (hitExact && exact != model) { exact = model; ++exactHits; }
-        else if (hitNum && digits != model) { digits = model; ++digitHits; }
-    }
-    if (exactHits == 1) return exact;
-    if (exactHits == 0 && digitHits == 1) return digits;
-    return {};                                                         // none or ambiguous
+    return felitronics::measurement::guessModel(fileName, catalog);
 }
 
 } // namespace ocap::micset
