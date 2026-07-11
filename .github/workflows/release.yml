@@ -70,6 +70,10 @@ jobs:
         with:
           repository: darwinscat/felitronics-core
           path: felitronics-core
+      - uses: actions/checkout@v4
+        with:
+          repository: darwinscat/felitronics-appkit
+          path: felitronics-appkit
       - name: Version
         id: v
         run: |
@@ -79,7 +83,9 @@ jobs:
         run: |
           cmake -B build -S app -DCMAKE_BUILD_TYPE=Release \
                 -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
-                -DOC_CORE_SRC="$GITHUB_WORKSPACE/felitronics-core"
+                -DOC_CORE_SRC="$GITHUB_WORKSPACE/felitronics-core" \
+                -DOC_APPKIT_SRC="$GITHUB_WORKSPACE/felitronics-appkit" \
+                -DOC_VERSION="v${{ steps.v.outputs.version }}"
           cmake --build build --parallel
       - name: Sign, notarize, package (.zip)
         env:
@@ -132,6 +138,10 @@ jobs:
         with:
           repository: darwinscat/felitronics-core
           path: felitronics-core
+      - uses: actions/checkout@v4
+        with:
+          repository: darwinscat/felitronics-appkit
+          path: felitronics-appkit
       - name: Version
         id: v
         shell: bash
@@ -145,7 +155,7 @@ jobs:
           key: juce-windows-${{ matrix.arch }}-${{ hashFiles('app/CMakeLists.txt') }}
       - name: Build
         run: |
-          cmake -B build -S app -A ${{ matrix.plat }} -DOC_CORE_SRC="${{ github.workspace }}/felitronics-core"
+          cmake -B build -S app -A ${{ matrix.plat }} -DOC_CORE_SRC="${{ github.workspace }}/felitronics-core" -DOC_APPKIT_SRC="${{ github.workspace }}/felitronics-appkit" -DOC_VERSION="v${{ steps.v.outputs.version }}"
           cmake --build build --config Release --parallel
       - name: Package (.zip)
         shell: pwsh
@@ -174,6 +184,10 @@ jobs:
         with:
           repository: darwinscat/felitronics-core
           path: felitronics-core
+      - uses: actions/checkout@v4
+        with:
+          repository: darwinscat/felitronics-appkit
+          path: felitronics-appkit
       - name: Version
         id: v
         run: |
@@ -195,7 +209,9 @@ jobs:
       - name: Build
         run: |
           cmake -B build -S app -G Ninja -DCMAKE_BUILD_TYPE=Release \
-                -DOC_CORE_SRC="$GITHUB_WORKSPACE/felitronics-core"
+                -DOC_CORE_SRC="$GITHUB_WORKSPACE/felitronics-core" \
+                -DOC_APPKIT_SRC="$GITHUB_WORKSPACE/felitronics-appkit" \
+                -DOC_VERSION="v${{ steps.v.outputs.version }}"
           cmake --build build
       - name: Package (.tar.gz)
         run: |

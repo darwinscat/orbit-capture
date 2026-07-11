@@ -25,6 +25,7 @@
 #include <limits>
 
 #include "ui/Widgets.h"
+#include "UpdateCheck.h"
 
 #include "ui/tabs/AudioTab.h"
 #include "ui/tabs/CaptureTab.h"
@@ -308,6 +309,34 @@ public:
         audioTab.navToCapture.setButtonText(juce::String::fromUTF8("Capture  \xe2\x86\x92"));
         audioTab.navToCapture.setColour(juce::TextButton::buttonColourId, navCol);
         audioTab.navToCapture.onClick = [this] { tabs.setCurrentTabIndex(1); };
+        // version + opt-in update check (Audio tab, bottom-left; the network is touched ONLY here)
+        audioTab.versionLbl.setText(juce::String("OrbitCapture  ") + updates.currentVersion(),
+                                    juce::dontSendNotification);
+        audioTab.versionLbl.setColour(juce::Label::textColourId, juce::Colours::white.withAlpha(0.35f));
+        refreshUpdateButton();
+        audioTab.updateBtn.onClick = [this] {
+            audioTab.updateBtn.setEnabled(false);
+            updates.checkNow([this](ocap::UpdateCheck::Result r) {
+                audioTab.updateBtn.setEnabled(true);
+                refreshUpdateButton();
+                if (!r.ok)
+                    juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon,
+                        "Check for updates", juce::String::fromUTF8("Could not reach GitHub \xe2\x80\x94 try again later."));
+                else if (!r.outdated)
+                    juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon,
+                        "Check for updates", "You are up to date (" + updates.currentVersion() + ").");
+                else {
+                    const juce::String url = r.url;
+                    juce::AlertWindow::showOkCancelBox(juce::MessageBoxIconType::InfoIcon,
+                        "Update available",
+                        "OrbitCapture " + r.latest + " is out (you run " + updates.currentVersion() + ").",
+                        "Open release page", "Later", nullptr,
+                        juce::ModalCallbackFunction::create([url](int ok) {
+                            if (ok == 1) juce::URL(url).launchInDefaultBrowser();
+                        }));
+                }
+            });
+        };
         takeTab.navToReview.setButtonText(juce::String::fromUTF8("Mixer  \xe2\x86\x92"));
         takeTab.navToReview.setColour(juce::TextButton::buttonColourId, navCol);
         takeTab.navToReview.setEnabled(false);                                  // lights up after a capture
@@ -1996,6 +2025,24 @@ private:
     std::vector<float> pendingLiveIr;                 // live-IR swap coalesced while the convolver fades
     bool analyzerOn = true;                           // live-analyser overlay (the graph's gear menu)
     bool legendOn = true;                             // channel legend on the graph (gear menu toggle)
+
+    // The update button doubles as the badge: a stored newer release re-labels it until the user
+    // catches up (the appkit checker clears the store on version catch-up in its ctor).
+    void refreshUpdateButton() {
+        const bool avail = updates.updateAvailable();
+        audioTab.updateBtn.setButtonText(avail
+            ? juce::String::fromUTF8("update available \xe2\x86\x92 v") + updates.storedLatest()
+            : juce::String("check for updates"));
+        if (avail) audioTab.updateBtn.setColour(juce::TextButton::buttonColourId, brand::violet.darker(0.25f));
+        else       audioTab.updateBtn.removeColour(juce::TextButton::buttonColourId);
+    }
+
+    // OC_VERSION_STRING comes from the app target (release CI passes the tag; dev = git describe).
+    // The tests tier never compiles this header, but keep the guard so a bare compile works too.
+#ifndef OC_VERSION_STRING
+#define OC_VERSION_STRING "unknown"
+#endif
+    ocap::UpdateCheck updates { OC_VERSION_STRING };
 
     // ---- the four tab views (ui/tabs/): dumb widgets + layout; all wiring stays here ----
     AudioTab audioTab;
