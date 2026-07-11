@@ -3,27 +3,18 @@
 #pragma once
 #include "ui/UiSupport.h"
 
-// Tab "1 Audio": the device selector + the guided "-> next step" button, plus the quiet
-// version/update-check row. Dumb view — the orchestrator creates the selector (it needs the
-// AudioDeviceManager) and wires the buttons.
+// Tab "1 Audio": the device selector + the guided "-> next step" button. Dumb view — the
+// orchestrator creates the selector (it needs the AudioDeviceManager) and wires the button.
+// (The update check lives in the header: click the version readout, top-right.)
 struct AudioTab : juce::Component {
     juce::Component* selector = nullptr;       // owned by the orchestrator; laid out here
     juce::TextButton navToCapture;
-    juce::TextButton updateBtn;                // "check for updates" / "update available -> vX.Y.Z"
-    juce::Label      versionLbl;               // "OrbitCapture vX.Y.Z" — dim, informational
 
-    AudioTab() {
-        addAndMakeVisible(navToCapture);
-        addAndMakeVisible(updateBtn);
-        addAndMakeVisible(versionLbl);
-    }
+    AudioTab() { addAndMakeVisible(navToCapture); }
 
     void resized() override {
         auto r = getLocalBounds().reduced(8);
         if (selector) selector->setBounds(r.removeFromTop(240));
-        auto bottom = r.removeFromBottom(34);
-        navToCapture.setBounds(bottom.removeFromRight(170).reduced(0, 2));   // -> next step
-        updateBtn.setBounds(bottom.removeFromLeft(190).reduced(0, 2));
-        versionLbl.setBounds(bottom.reduced(8, 2));
+        navToCapture.setBounds(r.removeFromBottom(34).removeFromRight(170).reduced(0, 2));   // -> next step
     }
 };
