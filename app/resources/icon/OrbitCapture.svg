@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" id="orbitcapture-icon" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!--
+    OrbitCapture app icon — the product's "converging-arrows" orbit mark, exactly the in-app
+    geometry (ui/UiSupport.h brand::drawOrbit, viewBox 0..40 scaled by 23): a dark disc body,
+    violet outer ring, lilac middle ring + four inward chevrons, and a FILLED orange core —
+    energy gathered to center = capture. Palette matches the family mark (violet #9778ff,
+    lilac #b9a6ff, orange #ff8a3d). Same pipeline and shadow as orbitcab's icon; the disc
+    fills ~90% of the canvas, the rest is shadow margin (macOS does not tile/mask app icons).
+    Reserved OrbitCapture / Darwin's Cat trademark.
+    Source of truth for OrbitCapture-1024.png — regenerate with:
+    rsvg-convert -w 1024 -h 1024 OrbitCapture.svg -o OrbitCapture-1024.png
+  -->
+  <defs>
+    <filter id="orbit-shadow" x="-60%" y="-60%" width="220%" height="220%">
+      <!-- soft halo -->
+      <feGaussianBlur in="SourceAlpha" stdDeviation="11" result="b1"/>
+      <feOffset in="b1" dx="0" dy="6" result="o1"/>
+      <feFlood flood-color="#000000" flood-opacity="0.55" result="f1"/>
+      <feComposite in="f1" in2="o1" operator="in" result="s1"/>
+      <!-- tight contact shadow -->
+      <feGaussianBlur in="SourceAlpha" stdDeviation="6" result="b2"/>
+      <feOffset in="b2" dx="0" dy="4" result="o2"/>
+      <feFlood flood-color="#000000" flood-opacity="0.9" result="f2"/>
+      <feComposite in="f2" in2="o2" operator="in" result="s2"/>
+      <feMerge>
+        <feMergeNode in="s1"/>
+        <feMergeNode in="s2"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <g filter="url(#orbit-shadow)">
+    <circle cx="512" cy="512" r="460" fill="#0b0b11"/>                                    <!-- dark disc body (the lens) -->
+    <circle cx="512" cy="512" r="425.5" fill="none" stroke="#9778ff" stroke-width="46"/>  <!-- violet outer ring -->
+    <circle cx="512" cy="512" r="276"   fill="none" stroke="#b9a6ff" stroke-width="36.8"/><!-- lilac middle ring -->
+    <g fill="none" stroke="#b9a6ff" stroke-width="46" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M 420 190 L 512 282 L 604 190"/>   <!-- top chevron, pointing in -->
+      <path d="M 420 834 L 512 742 L 604 834"/>   <!-- bottom -->
+      <path d="M 190 420 L 282 512 L 190 604"/>   <!-- left -->
+      <path d="M 834 420 L 742 512 L 834 604"/>   <!-- right -->
+    </g>
+    <circle cx="512" cy="512" r="80.5" fill="#ff8a3d"/>                                   <!-- orange core: energy captured -->
+  </g>
+</svg>
