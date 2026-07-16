@@ -81,20 +81,19 @@ public:
         int nn = 1;
         while (sessionDir.getChildFile ("take" + juce::String (nn).paddedLeft ('0', 2)).exists()) ++nn;
         const auto dir = sessionDir.getChildFile ("take" + juce::String (nn).paddedLeft ('0', 2));
-        dir.createDirectory();
-
-        const int N = (int) irs.size();
-        for (int m = 0; m < N; ++m) {
-            const juce::String suffix = N == 1 ? juce::String() : "_mic" + juce::String (m + 1);
-            if (m < (int) raw.size())
-                oc::wav_write_mono_f32 (dir.getChildFile ("raw" + suffix + ".wav").getFullPathName().toStdString(),
-                                        raw[(std::size_t) m], sr);
-            oc::wav_write_mono_f32 (dir.getChildFile ("ir" + suffix + ".wav").getFullPathName().toStdString(),
-                                    irs[(std::size_t) m], sr);
-        }
-
-        dir.getChildFile ("take.json").replaceWithText (juce::JSON::toString (takeToVar (take)));
+        writeTakeInto (dir, take, raw, irs, sr);
         return dir;
+    }
+
+    // Re-record over an existing take dir (the capture-replace flow: same mic setup, user confirmed).
+    // The old capture is wiped and the new one written under the SAME take number — audio, take.json
+    // and numbering end up as if this capture had been the original.
+    juce::File replaceTake (const juce::File& takeDir, const TakeMeta& take,
+                           const std::vector<std::vector<double>>& raw,
+                           const std::vector<std::vector<double>>& irs, double sr) const {
+        takeDir.deleteRecursively();
+        writeTakeInto (takeDir, take, raw, irs, sr);
+        return takeDir;
     }
 
     // Metadata only — take.json through the same legacy migrations, no WAV reads (reports, labels).
@@ -225,6 +224,24 @@ public:
     }
 
 private:
+    // The single take-dir writer behind saveTake/replaceTake: the raw/ir WAV naming rule
+    // (N==1 un-suffixed, N>1 _micN) + take.json.
+    void writeTakeInto (const juce::File& dir, const TakeMeta& take,
+                        const std::vector<std::vector<double>>& raw,
+                        const std::vector<std::vector<double>>& irs, double sr) const {
+        dir.createDirectory();
+        const int N = (int) irs.size();
+        for (int m = 0; m < N; ++m) {
+            const juce::String suffix = N == 1 ? juce::String() : "_mic" + juce::String (m + 1);
+            if (m < (int) raw.size())
+                oc::wav_write_mono_f32 (dir.getChildFile ("raw" + suffix + ".wav").getFullPathName().toStdString(),
+                                        raw[(std::size_t) m], sr);
+            oc::wav_write_mono_f32 (dir.getChildFile ("ir" + suffix + ".wav").getFullPathName().toStdString(),
+                                    irs[(std::size_t) m], sr);
+        }
+        dir.getChildFile ("take.json").replaceWithText (juce::JSON::toString (takeToVar (take)));
+    }
+
     juce::File root_;
 };
 

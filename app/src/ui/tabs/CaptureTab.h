@@ -21,7 +21,7 @@ struct CaptureTab : juce::Component {
     juce::Component micHolder;                 // scroll content: all the mic strips
     HintLabel lLevelHint;
     juce::Label calibVerdict;                  // shared "all mics in the green zone" verdict during noise
-    juce::Label status;
+    juce::TextEditor status;                   // capture report / errors: multi-line, read-only, scrolls
     juce::TextButton navToReview;              // guided "-> next step" (lights up after a capture)
     std::vector<std::unique_ptr<MicRowUI>> micRows;
 
@@ -34,7 +34,19 @@ struct CaptureTab : juce::Component {
             addAndMakeVisible(c);
         micViewport.setViewedComponent(&micHolder, false);     // mic strips scroll; scene + add-mic stay put
         micViewport.setScrollBarsShown(true, false);
+        status.setMultiLine(true);                             // reports/errors span lines; long ones scroll
+        status.setReadOnly(true);
+        status.setScrollbarsShown(true);
+        status.setCaretVisible(false);
+        status.setFont(juce::FontOptions(13.0f));
+        status.setColour(juce::TextEditor::backgroundColourId, juce::Colours::transparentBlack);
+        status.setColour(juce::TextEditor::outlineColourId, juce::Colours::transparentBlack);
+        status.setColour(juce::TextEditor::focusedOutlineColourId, juce::Colours::transparentBlack);
+        status.setColour(juce::TextEditor::shadowColourId, juce::Colours::transparentBlack);
     }
+
+    // All capture reports/errors land here; rewind to the top so the first line is always visible.
+    void showStatus(const juce::String& t) { status.setText(t, false); status.setCaretPosition(0); }
 
     void resized() override {
         auto r = getLocalBounds().reduced(8);
@@ -53,7 +65,7 @@ struct CaptureTab : juce::Component {
         { auto a = row(40).reduced(0, 4);                      // Play noise | Capture, 50/50
           noiseButton.setBounds(a.removeFromLeft(a.getWidth() / 2 - 4)); a.removeFromLeft(8);
           captureButton.setBounds(a); }
-        status.setBounds(row(34));                             // the result, right under the buttons
+        status.setBounds(row(56));                             // the report, right under the buttons (scrolls past ~3 lines)
         row(6);
         { auto a = row(18); lLevelHint.setBounds(a.removeFromLeft(a.getWidth() / 2)); calibVerdict.setBounds(a); }
         row(6);
