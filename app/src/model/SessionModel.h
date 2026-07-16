@@ -23,6 +23,22 @@ struct MicMeta {
     std::size_t delaySamples = 0;
 };
 
+// Setup identity for the capture-replace flow: "the same mics in the same positions" — model,
+// placement (location/position/axis), physical distance and input binding, element-wise. Measured
+// results (levels/SNR/latency/delay), the colour slot and distanceInput (a unit-formatted mirror of
+// distanceMm — cm<->in re-formats it without moving the mic) are per-capture outcomes, not setup.
+// Empty never matches (a capture always has mics; named-empty/import takes must not pair up).
+inline bool sameMicSetup (const MicMeta& a, const MicMeta& b) {
+    return a.model == b.model && a.location == b.location && a.position == b.position
+        && a.axis == b.axis && a.distanceMm == b.distanceMm && a.inputChannel == b.inputChannel;
+}
+inline bool sameMicSetup (const std::vector<MicMeta>& a, const std::vector<MicMeta>& b) {
+    if (a.empty() || a.size() != b.size()) return false;
+    for (std::size_t i = 0; i < a.size(); ++i)
+        if (! sameMicSetup (a[i], b[i])) return false;
+    return true;
+}
+
 // take.json's sweep{} — the sweep spec used for this capture (reproducibility).
 struct SweepMeta {
     double f1 = 0.0, f2 = 0.0, dur = 0.0, tail = 0.0;

@@ -166,6 +166,40 @@ int main() {
         ok (! store.removeChannel (dir, 0), "the last channel refuses to be removed");
     }
 
+    group ("replaceTake: re-record over the same take number (capture-replace flow)");
+    {
+        const auto sessionDir = store.createSession ("replace cab");
+        ocap::TakeMeta t1;
+        t1.timestamp = "20260715-120000"; t1.sampleRate = 48000.0;
+        ocap::MicMeta a; a.model = "SM57"; a.inputChannel = 1;
+        ocap::MicMeta b; b.model = "R121"; b.inputChannel = 2;
+        t1.mics = { a, b };
+        const auto d1 = store.saveTake (sessionDir, t1, { synth (4800, 4.0), synth (4800, 5.0) },
+                                        { ir1, ir2 }, 48000.0);
+        ocap::TakeMeta t2 = t1; t2.timestamp = "20260715-130000";
+        const auto d2 = store.saveTake (sessionDir, t2, { synth (4800, 6.0), synth (4800, 7.0) },
+                                        { ir2, ir1 }, 48000.0);
+        ok (d2.getFileName() == "take02", "two takes on disk before the replace");
+
+        // The retake: same dir, same number — but fewer mics (1), so the _micN files must not linger.
+        ocap::TakeMeta t3; t3.timestamp = "20260715-140000"; t3.sampleRate = 48000.0;
+        t3.mics = { a };
+        const auto ir3 = synth (2400, 8.0);
+        const auto rd = store.replaceTake (d2, t3, { synth (4800, 9.0) }, { ir3 }, 48000.0);
+        ok (rd == d2 && rd.getFileName() == "take02", "replaced take keeps its number");
+        ok (store.scanTakes (sessionDir).size() == 2, "no dupe: still two take dirs");
+        ok (rd.getChildFile ("ir.wav").existsAsFile() && rd.getChildFile ("raw.wav").existsAsFile(),
+            "the retake's files use the fresh naming rule (N==1 un-suffixed)");
+        ok (! rd.getChildFile ("ir_mic1.wav").exists() && ! rd.getChildFile ("ir_mic2.wav").exists()
+            && ! rd.getChildFile ("raw_mic2.wav").exists(), "the old capture's files are gone");
+        const auto lt = store.loadTake (rd);
+        ok (lt.take.timestamp == "20260715-140000" && lt.take.mics.size() == 1, "take.json is the retake's");
+        ok (lt.irs.size() == 1 && lt.irs[0].size() == ir3.size()
+            && std::fabs ((float) lt.irs[0][100] - (float) ir3[100]) < 1e-6f, "the retake's IR loads back");
+        const auto keep = store.loadTake (d1);
+        ok (keep.take.timestamp == "20260715-120000" && keep.irs.size() == 2, "the untouched take01 survives");
+    }
+
     root.deleteRecursively();
     return felitronics::test::report();
 }

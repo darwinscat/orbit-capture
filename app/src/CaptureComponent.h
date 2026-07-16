@@ -89,9 +89,7 @@ public:
         takeTab.noiseButton.onClick = [this] { engine.noiseOn.store(takeTab.noiseButton.getToggleState()); updateCalibVerdict(); };
         takeTab.calibVerdict.setJustificationType(juce::Justification::centred);
         takeTab.calibVerdict.setFont(juce::FontOptions(13.0f, juce::Font::bold));
-        takeTab.status.setText("Place the mics, set levels with the noise, Capture. Every take lands in the session.",
-                       juce::dontSendNotification);
-        takeTab.status.setJustificationType(juce::Justification::topLeft);
+        takeTab.showStatus("Place the mics, set levels with the noise, Capture. Every take lands in the session.");
 
         // ---- session management (lives in the header's top-right) + the session-fields dialog ----
         sessionBox.setTextWhenNothingSelected("session");              // the session picker
@@ -502,7 +500,7 @@ private:
         if (!problems.isEmpty()) { showProblemsDialog(problems); return; }
         prepareRun(false);
         stopNoise();                                                   // the sweep plays now — kill the level-set noise (no auto-resume after)
-        takeTab.status.setText("Capturing " + juce::String(engine.rtNumMics) + " mic(s), one sweep...", juce::dontSendNotification);
+        takeTab.showStatus("Capturing " + juce::String(engine.rtNumMics) + " mic(s), one sweep...");
         engine.capturing.store(true, std::memory_order_release);
     }
 
@@ -565,8 +563,7 @@ private:
     void locationChangedFor(MicRowUI* rw) {
         const auto loc = rw->location.getText();
         if (countLoc(loc, indexOf(rw)) >= locLimit(loc)) {             // limits: 4 grille / 2 room / 2 rear
-            takeTab.status.setText("Limit reached: max " + juce::String(locLimit(loc)) + " " + loc + " mics.",
-                           juce::dontSendNotification);
+            takeTab.showStatus("Limit reached: max " + juce::String(locLimit(loc)) + " " + loc + " mics.");
             rw->location.setSelectedId(rw->lastLocId, juce::dontSendNotification);
             return;
         }
@@ -577,8 +574,8 @@ private:
         configureSliderFor(rw);
         if (loc == "grille") placeGrille(rw);                          // back to grille → re-appear on a free grid spot
         if (loc == "rear" && exportTab.cab.backBox.getText() == "closed")
-            takeTab.status.setText("Note: closed-back cab - a rear mic hears the panel, not the speaker."
-                           "\nIf you blend it with a front mic later, invert its polarity.", juce::dontSendNotification);
+            takeTab.showStatus("Note: closed-back cab - a rear mic hears the panel, not the speaker."
+                               "\nIf you blend it with a front mic later, invert its polarity.");
         updateScene();
     }
     void addMicRow() {
@@ -784,7 +781,7 @@ private:
                 refreshMicCombo(m->mic, (m.get() == rw) ? v : m->mic.getText());
             refreshCaptureGate();
             if (existed)
-                takeTab.status.setText("\"" + v + "\" is already in the list - selected it.", juce::dontSendNotification);
+                takeTab.showStatus("\"" + v + "\" is already in the list - selected it.");
         });
     }
     // Gear-list management ([...] menus) lives in ui/tabs/CabForm.h; the mic-model picker below
@@ -1371,7 +1368,7 @@ private:
                     fails << "\n  mic" << juce::String(m + 1) << " (in" << juce::String(engine.rtChans[m] + 1) << "): "
                           << gs[(size_t)m].reason.c_str() << " (peak " << juce::String(gs[(size_t)m].peak_dbfs, 1)
                           << " dBFS, snr " << juce::String(gs[(size_t)m].snr, 0) << ")";
-            takeTab.status.setText("REJECTED - whole set (retake is cheap):" + fails, juce::dontSendNotification);
+            takeTab.showStatus("REJECTED - whole set (retake is cheap):" + fails);
             return;
         }
         const auto& outs = cap.irs;
@@ -1472,11 +1469,67 @@ private:
         // (unity, filters off) — the actual Master state only exists once rebuildMixer() below runs.
         for (int m = 0; m < N; ++m) take.mix.push_back(ocap::StripParams{});
 
-        const auto dir = store_.saveTake(sessionDir, take, recs, irs, engine.sampleRate);
+        // Re-capture with an UNCHANGED mic set (same mics, same positions) offers to REPLACE the
+        // previous take instead of stacking a dupe — the retake-until-clean loop. Any edit to the
+        // set (count/model/place/axis/distance/input) still lands as a new take, no prompt.
+        const int prevIdx = (int)takeDirs.size() - 1;
+        if (prevIdx >= 0 && ocap::sameMicSetup(take.mics, store_.loadTakeMeta(takeDirs[(size_t)prevIdx]).mics)) {
+            // by value into the payload: the AlertWindow callback runs after this frame's refs die
+            auto p = std::make_shared<PendingTake>(PendingTake{ take, recs, irs, metrics, engine.sampleRate });
+            const auto prev = takeDirs[(size_t)prevIdx];
+            // Esc/dismiss maps to button3 (0) = Keep both — never destroys anything silently.
+            juce::AlertWindow::showYesNoCancelBox(juce::MessageBoxIconType::QuestionIcon,
+                "Replace " + prev.getFileName() + "?",
+                "Same mics in the same positions as " + prev.getFileName() + "."
+                    + "\nReplace it with this capture, discard the new capture, or keep both takes?",
+                "Replace", "Discard", "Keep both", this,
+                juce::ModalCallbackFunction::create([this, p, prevIdx](int r) {
+                    if (r == 1)      commitReplaceTake(p->take, p->recs, p->irs, p->metrics, p->sr, prevIdx);
+                    else if (r == 2) discardCapture(prevIdx);
+                    else             commitNewTake(p->take, p->recs, p->irs, p->metrics, p->sr);
+                }));
+            return;
+        }
+        commitNewTake(take, recs, irs, metrics, engine.sampleRate);
+    }
+    // A finished capture parked behind the replace-or-keep prompt.
+    struct PendingTake {
+        ocap::TakeMeta take;
+        std::vector<std::vector<double>> recs, irs;
+        juce::String metrics;
+        double sr = 0.0;
+    };
+    void commitNewTake(const ocap::TakeMeta& take, const std::vector<std::vector<double>>& recs,
+                       const std::vector<std::vector<double>>& irs, const juce::String& metrics, double sr) {
+        const int N = (int)irs.size();
+        const auto dir = store_.saveTake(sessionDir, take, recs, irs, sr);
         adoptNewTake(dir);
-        takeTab.status.setText(dir.getFileName() + " saved to " + sessionDir.getFileName()
-                     + "  (" + juce::String(N) + " mic" + (N > 1 ? "s" : "") + ", one sweep)\n" + metrics,
-                       juce::dontSendNotification);
+        takeTab.showStatus(dir.getFileName() + " saved to " + sessionDir.getFileName()
+                     + "  (" + juce::String(N) + " mic" + (N > 1 ? "s" : "") + ", one sweep)\n" + metrics);
+    }
+    // Discard the just-captured audio: nothing is written; Review returns to the kept take
+    // (loadTake restores its IRs + saved mix from disk — the new capture leaves no trace).
+    void discardCapture(int keptIdx) {
+        if (keptIdx >= 0 && keptIdx < (int)takeDirs.size()) {
+            loadTake(keptIdx);
+            refreshTakeBox();                                          // re-point the take combo at the kept take
+            takeTab.showStatus("Capture discarded - " + takeDirs[(size_t)keptIdx].getFileName() + " kept unchanged.");
+        } else
+            takeTab.showStatus("Capture discarded.");
+    }
+    void commitReplaceTake(const ocap::TakeMeta& take, const std::vector<std::vector<double>>& recs,
+                           const std::vector<std::vector<double>>& irs, const juce::String& metrics,
+                           double sr, int idx) {
+        if (idx < 0 || idx >= (int)takeDirs.size()) { commitNewTake(take, recs, irs, metrics, sr); return; }
+        const int N = (int)irs.size();
+        const auto dir = store_.replaceTake(takeDirs[(size_t)idx], take, recs, irs, sr);
+        currentTake = idx;
+        refreshTakeBox();                                              // the label re-renders (new timestamp/metrics)
+        saveSessionJson();
+        refreshExportStatus();
+        takeTab.navToReview.setEnabled(true);
+        takeTab.showStatus(dir.getFileName() + " replaced (same mic set) in " + sessionDir.getFileName()
+                     + "  (" + juce::String(N) + " mic" + (N > 1 ? "s" : "") + ", one sweep)\n" + metrics);
     }
 
     // A named EMPTY take: the user gives it a name, then fills it with IR files via the

@@ -4,6 +4,7 @@
 // these rules used to live inside CaptureComponent and needed a widget tree to exercise.
 #include <felitronics_test.h>
 #include "model/MicSetModel.h"
+#include "model/SessionModel.h"
 
 #include <string>
 #include <vector>
@@ -116,6 +117,41 @@ int main()
         ok (guessModel ("cab 4140 bright", cat).empty(), "'4140' is not '414' (whole-token only)");
         ok (guessModel ("sm57 or m160", cat).empty(), "two exact hits -> no guess (never a wrong pick)");
         ok (guessModel ("room mic", cat).empty(), "nothing recognizable -> empty");
+    }
+
+    group ("sameMicSetup: the capture-replace identity — placement counts, measurements don't");
+    {
+        auto mk = [] (const char* model, const char* loc, const char* pos, const char* axis,
+                      int distMm, int in) {
+            ocap::MicMeta m;
+            m.model = model; m.location = loc; m.position = pos; m.axis = axis;
+            m.distanceMm = distMm; m.inputChannel = in;
+            return m;
+        };
+        const std::vector<ocap::MicMeta> set { mk ("SM57", "grille", "Cap Edge", "on-axis", 20, 1),
+                                               mk ("R121", "room",   "room",     "",        600, 2) };
+        ok (ocap::sameMicSetup (set, set), "identical sets match");
+
+        auto measured = set;                       // a re-take: new levels/SNR/delay, same physical setup
+        measured[0].gatePeakDbfs = -3.2; measured[0].snrDb = 51.0; measured[0].latencySamples = 99;
+        measured[1].delaySamples = 240;  measured[1].slot = 5;
+        measured[1].distanceInput = "60 cm";       // unit re-format, distanceMm unchanged
+        ok (ocap::sameMicSetup (set, measured), "measured fields, slot and distanceInput don't break identity");
+
+        auto v = set; v[0].model = "MD421";
+        ok (! ocap::sameMicSetup (set, v), "different model differs");
+        v = set; v[0].position = "Center Cap";
+        ok (! ocap::sameMicSetup (set, v), "different grid position differs");
+        v = set; v[0].axis = "off-axis";
+        ok (! ocap::sameMicSetup (set, v), "different axis differs");
+        v = set; v[1].distanceMm = 900;
+        ok (! ocap::sameMicSetup (set, v), "different distance differs");
+        v = set; v[0].inputChannel = 3;
+        ok (! ocap::sameMicSetup (set, v), "different input binding differs");
+        v = set; v.pop_back();
+        ok (! ocap::sameMicSetup (set, v), "different mic count differs");
+        const std::vector<ocap::MicMeta> none;
+        ok (! ocap::sameMicSetup (none, none), "empty never matches (named-empty/import takes must not pair)");
     }
 
     return felitronics::test::report();
