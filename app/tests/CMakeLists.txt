@@ -12,6 +12,14 @@ set(OC_CORE_SRC "${CMAKE_CURRENT_SOURCE_DIR}/../../../felitronics-core" CACHE PA
 include(FetchContent)
 FetchContent_Declare(felitronics_core SOURCE_DIR "${OC_CORE_SRC}")
 FetchContent_MakeAvailable(felitronics_core)
+get_directory_property(OC_CORE_VERSION DIRECTORY "${felitronics_core_SOURCE_DIR}" DEFINITION PROJECT_VERSION)
+# FLOOR, not a pin: oc/wav.hpp is a shim over felitronics::io, whose writer quantizes PCM on the
+# 2^(bits-1) grid (the one its reader and felitronics::dither use) only from core 0.53.0. An older
+# sibling still compiles — with the old, one-LSB-narrow 24-bit export — so refuse it here.
+if(OC_CORE_VERSION VERSION_LESS "0.53.0")
+  message(FATAL_ERROR "felitronics-core at ${OC_CORE_SRC} is ${OC_CORE_VERSION}; OrbitCapture needs >= 0.53.0 "
+                      "(felitronics::io PCM grid). Update the sibling checkout.")
+endif()
 
 enable_testing()
 
@@ -19,7 +27,8 @@ set(OC_TEST_INCLUDES
     ${CMAKE_CURRENT_SOURCE_DIR}/../src
     ${CMAKE_CURRENT_SOURCE_DIR}/../../dsp/include
     ${felitronics_core_SOURCE_DIR}/test_support)
-set(OC_TEST_LIBS felitronics::core felitronics::measurement felitronics::analysis felitronics::blend felitronics::convolution)
+set(OC_TEST_LIBS felitronics::core felitronics::measurement felitronics::analysis felitronics::blend felitronics::convolution
+    felitronics::io)   # oc/wav.hpp (SessionStore) is a shim over felitronics/io/Wav.h
 
 function(oc_add_test name src)
     add_executable(${name} ${src})
