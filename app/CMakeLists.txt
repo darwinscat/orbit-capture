@@ -60,6 +60,13 @@ message(STATUS "OrbitCapture update-check version stamp: ${OC_VERSION}")
 # project() scopes, so they can never drift from what was actually built.
 get_directory_property(OC_CORE_VERSION   DIRECTORY "${felitronics_core_SOURCE_DIR}"   DEFINITION PROJECT_VERSION)
 get_directory_property(OC_APPKIT_VERSION DIRECTORY "${felitronics_appkit_SOURCE_DIR}" DEFINITION PROJECT_VERSION)
+# FLOOR, not a pin: oc/wav.hpp is a shim over felitronics::io, whose writer quantizes PCM on the
+# 2^(bits-1) grid (the one its reader and felitronics::dither use) only from core 0.53.0. An older
+# sibling still compiles — with the old, one-LSB-narrow 24-bit export — so refuse it here.
+if(OC_CORE_VERSION VERSION_LESS "0.53.0")
+  message(FATAL_ERROR "felitronics-core at ${OC_CORE_SRC} is ${OC_CORE_VERSION}; OrbitCapture needs >= 0.53.0 "
+                      "(felitronics::io PCM grid). Update the sibling checkout.")
+endif()
 
 juce_add_gui_app(OrbitCaptureApp
     PRODUCT_NAME "OrbitCapture"
@@ -99,6 +106,7 @@ target_link_libraries(OrbitCaptureApp PRIVATE
     felitronics::analysis
     felitronics::blend
     felitronics::convolution
+    felitronics::io          # oc/wav.hpp is a shim over felitronics/io/Wav.h
     juce::juce_dsp
     juce::juce_audio_utils
     juce::juce_recommended_config_flags
